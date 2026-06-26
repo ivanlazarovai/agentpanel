@@ -16,12 +16,13 @@ async def test_detect_returns_catalog_with_health_for_drivable():
     agents = await ftu.detect()
     assert len(agents) >= 4
     by_name = {a.name: a for a in agents}
-    # Claude + Cursor are the drivable ones; they get a real health probe.
+    # Claude + Cursor are drivable; they get a real health probe.
     assert by_name["claude"].drivable is True
     assert by_name["claude"].health is not None
-    # Codex is catalogued as installable-but-not-drivable-yet.
-    assert by_name["codex"].drivable is False
-    assert by_name["codex"].install_cmd  # has an install hint
+    # Codex now has a real adapter, so it's drivable and health-probed too.
+    assert by_name["codex"].drivable is True
+    assert by_name["codex"].health is not None
+    assert by_name["codex"].install_cmd  # still carries an install hint
 
 
 def test_write_brief_creates_files_with_markers(tmp_path: Path):
