@@ -73,6 +73,8 @@ class ClaudeCodeAdapter(CliAdapter):
         # default (xhigh), which otherwise explores the whole repo for minutes per pass.
         if ctx.effort:
             args += ["--effort", ctx.effort]
+        if ctx.budget_usd:
+            args += ["--max-budget-usd", str(ctx.budget_usd)]  # hard cap on a planning pass
         if ctx.session_ref:
             args += ["--resume", ctx.session_ref]
         # Ensure the agent can read the worktree it's running in.

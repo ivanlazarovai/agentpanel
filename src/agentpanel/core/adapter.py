@@ -62,6 +62,7 @@ class RunContext:
     session_ref: Optional[str] = None  # resume handle from a prior turn (None = fresh)
     model: Optional[str] = None
     effort: Optional[str] = None  # low|medium|high|xhigh|max — bound exploration cost/latency
+    budget_usd: Optional[float] = None  # optional hard spend cap for this run
     timeout_s: Optional[float] = None
     turn: int = 0  # 0 = isolated planning; 1..Y = critique turns
     # When set (execution), route the agent's gated tool requests through AgentPanel's

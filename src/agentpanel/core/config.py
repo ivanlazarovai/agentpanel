@@ -95,7 +95,8 @@ class Settings:
     max_turns: int = 3  # Y: critique turns before escalation
     barrier_timeout_s: float = 120.0  # per-turn deadline for slow/dead agents
     escalation_top_n: int = 3  # options shown to the user on non-convergence
-    plan_effort: str = "medium"  # effort for plan/critique passes (keeps deliberation snappy)
+    plan_effort: str = "low"  # effort for plan/critique passes — a first draft, red-teamed later
+    plan_budget_usd: float = 0.0  # optional hard $ cap per plan/critique pass (0 = unset)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

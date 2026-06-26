@@ -146,12 +146,12 @@ class DeliberationEngine:
             session_ref=p.session_ref,
             model=p.config.model,
             effort=p.config.effort or self.settings.plan_effort,  # bound exploration latency
+            budget_usd=self.settings.plan_budget_usd or None,
             turn=turn,
             timeout_s=self.settings.barrier_timeout_s,
         )
-        gen = p.adapter.plan(self.question, ctx) if mode == "plan" else p.adapter.critique(
-            self.question, peers, ctx
-        )
+        gen = p.adapter.plan(_plan_prompt(self.question), ctx) if mode == "plan" \
+            else p.adapter.critique(self.question, peers, ctx)
         self.bus.publish(EventKind.PANELIST_STARTED, agent=p.name, mode=mode, turn=turn)
         started = time.monotonic()
         try:
@@ -351,6 +351,24 @@ def _responded_this_turn(p: Panelist, turn: int) -> bool:
 def _responded_any(p: Panelist) -> bool:
     """Has this panelist produced a usable plan in any prior turn?"""
     return bool(p.record and p.record.responded)
+
+
+def _plan_prompt(question: str) -> str:
+    """Scope the isolated-planning pass so agents don't read the whole repo.
+
+    The plan is a first draft that peers will red-team and the elected agent re-implements
+    at full effort — so it should be a *focused* plan, not an exhaustive survey. This both
+    speeds the pass (far fewer tool calls) and yields the APPROACH/FIT lines the judge clusters on.
+    """
+    return (
+        "Produce a FOCUSED, concrete plan for the request below, as if you were the only "
+        "agent on it. Explore only what you need to be specific — you do NOT need to read "
+        "the whole repository; a few key files are usually enough. Keep it tight: name the "
+        "approach, the key files/changes, and the main risks — this is a plan, not an "
+        "implementation and not an exhaustive survey. Begin with a line 'APPROACH: <short "
+        "label>' and end with 'FIT: <0..1>' (your fitness to implement it).\n\n"
+        f"=== THE REQUEST ===\n{question}"
+    )
 
 
 def _round_robin(names: List[str]) -> Dict[str, str]:
