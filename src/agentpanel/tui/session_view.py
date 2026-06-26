@@ -14,6 +14,7 @@ evolved across the deliberation.
 
 from __future__ import annotations
 
+import time
 from typing import Dict, Tuple
 
 from textual.containers import VerticalScroll
@@ -31,6 +32,9 @@ class AgentCard(Collapsible):
         self._turns = TabbedContent(id=f"turns-{agent}")
         self._last = ("·", "—", None)  # status, approach, fit
         self._decision = ""  # proceed | stand_down | candidate
+        self._active = False  # currently thinking/working this turn
+        self._started = 0.0
+        self._steps = 0  # tool calls observed this turn (a legibility signal)
         super().__init__(self._turns, title=self._render_title(), collapsed=True)
 
     @staticmethod
@@ -39,11 +43,33 @@ class AgentCard(Collapsible):
         return f"{status} {approach}    {fit_s}".rstrip()
 
     def _render_title(self) -> str:
+        if self._active:
+            el = int(time.monotonic() - self._started)
+            spinner = "◐◓◑◒"[int(el) % 4]
+            return f"{self._agent}   {spinner} working · {self._steps} steps · {el}s"
         tag = {"proceed": "  ▶ PROCEED", "stand_down": "  ■ stand down",
                "monitor": "  👁 observing", "candidate": "  ? candidate"}.get(self._decision, "")
         return f"{self._agent}   " + self._summary_line(*self._last) + tag
 
+    # -- live progress -----------------------------------------------------
+
+    def begin(self) -> None:
+        self._active = True
+        self._started = time.monotonic()
+        self._steps = 0
+        self.title = self._render_title()
+
+    def bump(self) -> None:
+        self._steps += 1
+        if self._active:
+            self.title = self._render_title()
+
+    def refresh_elapsed(self) -> None:
+        if self._active:
+            self.title = self._render_title()
+
     def set_summary(self, status: str, approach: str, fit) -> None:
+        self._active = False
         self._last = (status, approach, fit)
         self.title = self._render_title()
 
@@ -113,7 +139,13 @@ class SessionView(VerticalScroll):
 
     async def _on_panelist_started(self, d) -> None:
         await self._ensure_turn(d["agent"], d["turn"])
-        self._cards[d["agent"]].set_summary("◷", "thinking…", None)
+        if d["agent"] in self._cards:
+            self._cards[d["agent"]].begin()  # start the live "working · N steps · Ns" clock
+
+    def refresh_progress(self) -> None:
+        """Tick the elapsed clock on any agents currently working (called on a timer)."""
+        for card in self._cards.values():
+            card.refresh_elapsed()
 
     async def _on_panelist_token(self, d) -> None:
         # We don't know the active turn from the token event; append to the agent's latest.
@@ -127,6 +159,8 @@ class SessionView(VerticalScroll):
 
     async def _on_panelist_tool(self, d) -> None:
         agent = d["agent"]
+        if agent in self._cards:
+            self._cards[agent].bump()  # live step counter
         turn = max((t for (a, t) in self._turn_static if a == agent), default=0)
         key = (agent, turn)
         if key in self._turn_static:
@@ -138,8 +172,14 @@ class SessionView(VerticalScroll):
         turn = max((t for (a, t) in self._turn_static if a == agent), default=0)
         text = self._turn_text.get((agent, turn), "")
         approach = extract_label(text) or (d.get("summary") or "done")
+        # Account for the wait: append elapsed + spend so a long pass reads as work done.
+        suffix = ""
+        if d.get("duration_ms"):
+            suffix += f"  ·{d['duration_ms'] // 1000}s"
+        if d.get("cost_usd"):
+            suffix += f" ${d['cost_usd']:.2f}"
         # fit comes from the engine (parsed from the full result, not the streamed tokens).
-        self._cards[agent].set_summary("✓", approach, d.get("fit"))
+        self._cards[agent].set_summary("✓", approach + suffix, d.get("fit"))
 
     async def _on_agent_session(self, d) -> None:
         # Remember the agent's own native session command (Ctrl-O opens it interactively).

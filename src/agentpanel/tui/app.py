@@ -92,8 +92,13 @@ class AgentPanelApp(App):
         self.title = "AgentPanel"
         self.sub_title = f"{len(self.manager.config.panel() or self.manager.config.enabled_agents())} panelists"
         self.query_one("#sessions", TabbedContent).display = False  # welcome until first session
+        self.set_interval(1.0, self._tick_progress)  # live elapsed clocks on working agents
         if self._demo_question:
             await self.start_session(self._demo_question)
+
+    def _tick_progress(self) -> None:
+        for view in self.query(SessionView):
+            view.refresh_progress()
 
     def action_focus_ask(self) -> None:
         self.query_one("#ask-input", Input).focus()
