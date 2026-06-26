@@ -100,6 +100,13 @@ class Session:
             self.bus.publish(EventKind.LOG, message=f"session error: {exc}", level="error")
             raise
         finally:
+            # Tear down any warm deliberation processes; execution resumes the saved
+            # session one-shot, so the persistent process must be released first.
+            for p in self.panelists:
+                try:
+                    await p.adapter.aclose()
+                except Exception:
+                    pass
             self.bus.publish(
                 EventKind.LOG, message=f"session {self.id} -> {self.status}", level="info"
             )

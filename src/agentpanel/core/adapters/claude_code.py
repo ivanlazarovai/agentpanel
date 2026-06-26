@@ -13,18 +13,88 @@ line (``result`` text, ``session_id``, ``is_error``). We normalize those to Adap
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, AsyncIterator, List, Optional
 
 from ..adapter import AdapterEvent, CliAdapter, HealthStatus, RunContext
+
+
+class _PersistentClaude:
+    """One long-running ``claude`` process fed messages over stream-json stdin, so context
+    accumulates in-memory across deliberation turns (no per-call startup / session replay)."""
+
+    def __init__(self, binary: str, args: List[str], cwd: Path) -> None:
+        self.binary = binary
+        self.args = args
+        self.cwd = cwd
+        self.proc: Optional[asyncio.subprocess.Process] = None
+        self.session_ref: Optional[str] = None
+
+    async def start(self) -> None:
+        self.proc = await asyncio.create_subprocess_exec(
+            self.binary, *self.args, cwd=str(self.cwd),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    async def send(self, prompt: str, parse_line) -> AsyncIterator[AdapterEvent]:
+        """Send one user message; stream this turn's events until its result."""
+        assert self.proc is not None and self.proc.stdin is not None and self.proc.stdout is not None
+        msg = {"type": "user", "message": {"role": "user", "content": prompt}}
+        self.proc.stdin.write((json.dumps(msg) + "\n").encode())
+        await self.proc.stdin.drain()
+
+        collected: List[str] = []
+        async for raw in self.proc.stdout:
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for ev in parse_line(obj):
+                if ev.session_ref:
+                    self.session_ref = ev.session_ref
+                if ev.type == "meta":
+                    continue
+                if ev.type == "token":
+                    collected.append(ev.text)
+                if ev.type == "done":
+                    yield AdapterEvent.done(ev.full_text or "".join(collected),
+                                            ev.session_ref or self.session_ref,
+                                            cost_usd=ev.cost_usd, tokens=ev.tokens)
+                    return
+                yield ev
+        # Stream ended (process died) — synthesize a terminal event.
+        yield AdapterEvent.done("".join(collected), self.session_ref)
+
+    async def close(self) -> None:
+        if self.proc is None:
+            return
+        try:
+            if self.proc.stdin is not None:
+                self.proc.stdin.close()
+            await asyncio.wait_for(self.proc.wait(), timeout=10)
+        except Exception:
+            try:
+                self.proc.kill()
+            except ProcessLookupError:
+                pass
 
 
 class ClaudeCodeAdapter(CliAdapter):
     kind = "claude_code"
     default_binary = "claude"
     version_flag = ["--version"]
+
+    def __init__(self, config) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(config)
+        self._live: Optional[_PersistentClaude] = None  # warm deliberation process
 
     async def health(self) -> HealthStatus:
         path = self.resolved_binary()
@@ -54,6 +124,57 @@ class ClaudeCodeAdapter(CliAdapter):
             return None
         # Resume the agent's own session interactively from its worktree.
         return f"(cd {workdir} && {self.binary} --resume {session_ref})"
+
+    # -- persistent deliberation (plan + critique share one warm process) --
+
+    async def plan(self, prompt: str, ctx: RunContext) -> AsyncIterator[AdapterEvent]:
+        async for ev in self._deliberate(prompt, ctx):
+            yield ev
+
+    async def critique(self, prompt: str, peers: str, ctx: RunContext) -> AsyncIterator[AdapterEvent]:
+        from ..adapter import _critique_prompt
+
+        async for ev in self._deliberate(_critique_prompt(prompt, peers), ctx):
+            yield ev
+
+    async def _deliberate(self, prompt: str, ctx: RunContext) -> AsyncIterator[AdapterEvent]:
+        path = self.resolved_binary()
+        if not path:
+            yield AdapterEvent.error(f"{self.name}: binary '{self.binary}' not found")
+            return
+        if self._live is None:
+            self._live = _PersistentClaude(path, self._persistent_args(ctx), ctx.workdir)
+            try:
+                await self._live.start()
+            except Exception as exc:  # pragma: no cover - exec failure
+                self._live = None
+                yield AdapterEvent.error(f"{self.name}: failed to start session: {exc}")
+                return
+        try:
+            async for ev in self._live.send(prompt, self._parse_line):
+                yield ev
+        except Exception as exc:  # pragma: no cover - stream failure
+            yield AdapterEvent.error(f"{self.name}: session stream error: {exc}")
+
+    def _persistent_args(self, ctx: RunContext) -> List[str]:
+        # No -p prompt (it streams over stdin); plan mode = read-only deliberation.
+        args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json",
+                "--verbose", "--permission-mode", "plan"]
+        model = ctx.model or self.model
+        if model:
+            args += ["--model", model]
+        if ctx.effort:
+            args += ["--effort", ctx.effort]
+        if ctx.budget_usd:
+            args += ["--max-budget-usd", str(ctx.budget_usd)]
+        args += ["--add-dir", str(ctx.workdir)]
+        args += list(self.config.extra_args)
+        return args
+
+    async def aclose(self) -> None:
+        if self._live is not None:
+            await self._live.close()
+            self._live = None
 
     def _args(self, mode: str, prompt: str, ctx: RunContext) -> List[str]:
         permission = "acceptEdits" if mode == "execute" else "plan"

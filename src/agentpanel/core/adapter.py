@@ -136,6 +136,11 @@ class AgentAdapter(ABC):
     async def health(self) -> HealthStatus:
         ...
 
+    async def aclose(self) -> None:
+        """Release any long-lived resources (e.g. a persistent agent process). Default
+        no-op for one-shot adapters; the engine calls it when a session ends."""
+        return None
+
     def open_command(self, session_ref: Optional[str], workdir: Path) -> Optional[str]:
         """Shell command the user can run to open this agent's *native* session and watch
         the real work — AgentPanel only mediates; the agent owns the session. None if the

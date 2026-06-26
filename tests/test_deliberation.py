@@ -94,6 +94,18 @@ async def test_election_picks_highest_fit_in_leading_cluster():
     assert session.outcome.elected == "high"
 
 
+@pytest.mark.asyncio
+async def test_claude_adapter_aclose_is_safe_without_a_live_session():
+    # The persistent-process lifecycle hook must be a no-op when nothing was started.
+    from agentpanel.core.adapters.claude_code import ClaudeCodeAdapter
+    from agentpanel.core.config import AgentConfig
+
+    adapter = ClaudeCodeAdapter(AgentConfig(name="claude", kind="claude_code"))
+    assert adapter._live is None
+    await adapter.aclose()  # no error
+    await adapter.aclose()  # idempotent
+
+
 def test_round_robin_assignment():
     from agentpanel.core.deliberation import _round_robin
 
