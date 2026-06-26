@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Single-command launcher for AgentPanel.
+#
+#   ./agentpanel                 # in the AgentPanel directory — sets up .venv on first run, then runs
+#   ./agentpanel ask --mock "…"  # any subcommand/flags pass straight through
+#
+# Tip: put it on your PATH so you can run `agentpanel` from anywhere (it still uses this
+# repo's venv and operates in your current directory):
+#   ln -s "$(pwd)/agentpanel" /usr/local/bin/agentpanel
+#
+# The shell side bootstraps the *environment* (venv + install); the CLI then self-bootstraps
+# the *agents* (detect → install → log in → verify) on first run. One word, all the way down.
+set -euo pipefail
+
+# Resolve this script's real directory, following symlinks (so a PATH symlink works).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+VENV="$HERE/.venv"
+PYTHON="${AGENTPANEL_PYTHON:-python3}"
+
+# First run (or a fresh clone): create the venv and install the package.
+if [ ! -x "$VENV/bin/agentpanel" ]; then
+  echo "AgentPanel: first-run environment setup in .venv …" >&2
+  "$PYTHON" -m venv "$VENV"
+  "$VENV/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null
+  "$VENV/bin/pip" install -e "$HERE[dev]" >/dev/null
+  echo "AgentPanel: environment ready." >&2
+fi
+
+# Editable install reflects source changes automatically — no reinstall needed.
+exec "$VENV/bin/agentpanel" "$@"
