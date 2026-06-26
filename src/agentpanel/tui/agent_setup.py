@@ -76,16 +76,22 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         await self._rebuild()
 
     async def _rebuild(self) -> None:
-        self._agents = await ftu.detect()
-        self.query_one("#hint", Static).update("Checking which accounts you're signed in as…")
-        # Read each installed agent's current account concurrently (status / whoami).
-        accounts: dict = {}
+        self.query_one("#hint", Static).update("Detecting agents and accounts…")
+        # Detection (health checks) and account lookups both spawn each CLI. Run them as a
+        # single concurrent wave — account_status only needs the kind, so it doesn't wait
+        # on detection — instead of detecting first and then fetching accounts.
+        from ..core.adapters import KNOWN_AGENTS
 
-        async def fetch(a: DetectedAgent) -> None:
-            if a.installed:
-                accounts[a.name] = await ftu.auth_account(a)
+        async def acct(entry) -> tuple:
+            probe = DetectedAgent(name=str(entry["name"]), kind=str(entry["kind"]),
+                                  label=str(entry["label"]), installed=True,
+                                  drivable=bool(entry.get("adapter")))
+            return str(entry["name"]), (await ftu.account_status(probe)).line
 
-        await asyncio.gather(*(fetch(a) for a in self._agents))
+        gathered = await asyncio.gather(ftu.detect(),
+                                        *(acct(e) for e in KNOWN_AGENTS))
+        self._agents = gathered[0]
+        accounts = {name: line for name, line in gathered[1:]}
 
         rows = self.query_one("#rows", VerticalScroll)
         await rows.remove_children()
@@ -103,8 +109,11 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
             who = f"   👤 {account}" if account else ""
             state = f"✓ {a.label} {a.version}{who}{tag}".rstrip()
             if not a.auth_cmd:  # key-based agent (e.g. Gemini): no login command
-                var = ftu.KIND_KEYVAR.get(a.kind, "API key")
-                state += f"\n     auth via {var} — `agentpanel account set {a.name} <KEY>`"
+                if a.auth_note:
+                    state += f"\n     {a.auth_note}"
+                else:
+                    var = ftu.KIND_KEYVAR.get(a.kind, "API key")
+                    state += f"\n     auth via {var} — `agentpanel account set {a.name} <KEY>`"
         elif a.installable:
             state = f"· {a.label} — not installed"
         else:

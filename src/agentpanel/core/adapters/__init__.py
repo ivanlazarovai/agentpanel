@@ -68,9 +68,12 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "probe": "gemini",
         "adapter": False,
         "install": "npm install -g @google/gemini-cli",
-        # Gemini has no login subcommand — running it interactively offers "Login with
-        # Google" (browser OAuth). Pick that, then /quit to return.
-        "auth": "gemini",
+        # Browser OAuth ("Login with Google") is no longer supported for *individual*
+        # Gemini Code Assist accounts — Google now routes individuals to the Antigravity
+        # suite (https://antigravity.google). The CLI still works with a Google AI Studio
+        # API key, so we auth key-based (GEMINI_API_KEY) rather than offer a dead login.
+        "auth_note": "Gemini individual browser login is deprecated (→ Antigravity). Use a "
+                     "Google AI Studio key: `agentpanel account set gemini <GEMINI_API_KEY>`",
         "docs": "https://github.com/google-gemini/gemini-cli",
     },
     {

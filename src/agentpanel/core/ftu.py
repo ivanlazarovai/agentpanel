@@ -50,6 +50,7 @@ class DetectedAgent:
     auth_cmd: str = ""
     auth_logout_cmd: str = ""
     auth_status_cmd: str = ""
+    auth_note: str = ""  # how to auth when there's no login command (e.g. Gemini → API key)
     docs: str = ""
     health: Optional[HealthStatus] = None
 
@@ -63,31 +64,34 @@ class DetectedAgent:
 # ---------------------------------------------------------------------------
 
 
+async def _probe(entry: Dict[str, object]) -> DetectedAgent:
+    """Probe a single catalog agent. Drivable agents get a real health check (spawns the
+    CLI); the rest are detected by presence on PATH (or an env var, for cloud agents)."""
+    name, kind, label = str(entry["name"]), str(entry["kind"]), str(entry["label"])
+    drivable = bool(entry.get("adapter"))
+    common = dict(name=name, kind=kind, label=label,
+                  install_cmd=str(entry.get("install") or ""),
+                  auth_cmd=str(entry.get("auth") or ""),
+                  auth_logout_cmd=str(entry.get("auth_logout") or ""),
+                  auth_status_cmd=str(entry.get("auth_status") or ""),
+                  auth_note=str(entry.get("auth_note") or ""),
+                  docs=str(entry.get("docs") or ""))
+    if drivable:
+        try:
+            health = await asyncio.wait_for(
+                build(AgentConfig(name=name, kind=kind)).health(), timeout=10.0)
+        except Exception:  # a hung/missing CLI must not stall the whole probe
+            health = HealthStatus(installed=False)
+        return DetectedAgent(installed=health.installed, drivable=True, binary=health.binary,
+                             version=health.version, health=health, **common)
+    path = shutil.which(str(entry.get("probe") or "")) if entry.get("probe") else None
+    return DetectedAgent(installed=bool(path), drivable=False, binary=path, **common)
+
+
 async def detect() -> List[DetectedAgent]:
-    """Probe every catalog agent. Drivable agents get a real health check; the rest are
-    detected by presence on PATH (or an env var, for cloud agents)."""
-    out: List[DetectedAgent] = []
-    for entry in KNOWN_AGENTS:
-        name, kind, label = str(entry["name"]), str(entry["kind"]), str(entry["label"])
-        drivable = bool(entry.get("adapter"))
-        probe = str(entry.get("probe") or "")
-        install_cmd = str(entry.get("install") or "")
-        auth_cmd = str(entry.get("auth") or "")
-        logout_cmd = str(entry.get("auth_logout") or "")
-        status_cmd = str(entry.get("auth_status") or "")
-        docs = str(entry.get("docs") or "")
-        common = dict(name=name, kind=kind, label=label, install_cmd=install_cmd,
-                      auth_cmd=auth_cmd, auth_logout_cmd=logout_cmd, auth_status_cmd=status_cmd,
-                      docs=docs)
-        if drivable:
-            health = await build(AgentConfig(name=name, kind=kind)).health()
-            out.append(DetectedAgent(installed=health.installed, drivable=True,
-                                     binary=health.binary, version=health.version,
-                                     health=health, **common))
-        else:
-            path = shutil.which(probe) if probe else None
-            out.append(DetectedAgent(installed=bool(path), drivable=False, binary=path, **common))
-    return out
+    """Probe every catalog agent concurrently (each spawns its CLI, so serial probing is
+    the dominant startup cost) and return them in catalog order."""
+    return list(await asyncio.gather(*(_probe(e) for e in KNOWN_AGENTS)))
 
 
 # Phrases in an agent's error output that mean "not logged in" (vs a real failure).
@@ -540,6 +544,7 @@ async def auto_bootstrap(
     result: Dict[str, AgentConfig] = dict(existing_by_name)  # preserve everything by default
     verified: List[str] = [n for n, a in prior.items() if a.enabled]
 
+    todo: List[DetectedAgent] = []
     for agent in [a for a in await detect() if a.drivable]:
         in_scope = (agent.name in only) if only is not None else True
         # Out of scope, or already verified (and not explicitly targeted) → leave as-is.
@@ -551,20 +556,29 @@ async def auto_bootstrap(
             continue
 
         if not agent.installed and do_install and agent.installable:
-            emit(f"installing {agent.label}…  ($ {agent.install_cmd})")
+            emit(f"installing {agent.label}…  ($ {agent.install_cmd})")  # serial: may prompt
             res = await install(agent)
             emit(f"  {'installed' if res.ok else 'install failed: ' + res.output[-120:]}")
             agent = next((a for a in await detect() if a.name == agent.name), agent)
         if not agent.installed:
             emit(f"skipping {agent.label} (not installed)")
             continue
+        todo.append(agent)
 
-        vr = await verify(AgentConfig(name=agent.name, kind=agent.kind), repo)
+    # The verification handshake invokes each agent for real (seconds each), so run them
+    # concurrently rather than one after another.
+    async def _verify(a: DetectedAgent) -> "VerifyResult":
+        return await verify(AgentConfig(name=a.name, kind=a.kind), repo)
+
+    results = dict(zip([a.name for a in todo],
+                       await asyncio.gather(*(_verify(a) for a in todo))))
+    for agent in todo:
+        vr = results[agent.name]
+        # Logins are interactive (own the terminal) → must stay serial; re-verify after.
         if not vr.ok and vr.needs_login and agent.auth_cmd and do_login:
             emit(f"{agent.label} needs login — launching `{agent.auth_cmd}`…")
             await login(agent)
-            vr = await verify(AgentConfig(name=agent.name, kind=agent.kind), repo)
-
+            vr = await _verify(agent)
         result[agent.name] = AgentConfig(name=agent.name, kind=agent.kind,
                                          enabled=vr.ok, verified=vr.ok)
         if vr.ok and agent.name not in verified:
