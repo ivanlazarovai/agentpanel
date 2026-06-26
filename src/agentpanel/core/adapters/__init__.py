@@ -58,6 +58,7 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "install": "npm install -g @openai/codex",
         "auth": "codex login",  # ChatGPT/device-code login
         "auth_logout": "codex logout",
+        "auth_status": "codex login status",
         "docs": "https://developers.openai.com/codex/cli",
     },
     {

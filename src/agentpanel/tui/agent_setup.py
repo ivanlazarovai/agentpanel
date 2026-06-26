@@ -8,6 +8,7 @@ browser/device-code flow owns the terminal, then control returns to the panel.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 from pathlib import Path
@@ -76,20 +77,34 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
 
     async def _rebuild(self) -> None:
         self._agents = await ftu.detect()
+        self.query_one("#hint", Static).update("Checking which accounts you're signed in as…")
+        # Read each installed agent's current account concurrently (status / whoami).
+        accounts: dict = {}
+
+        async def fetch(a: DetectedAgent) -> None:
+            if a.installed:
+                accounts[a.name] = await ftu.auth_account(a)
+
+        await asyncio.gather(*(fetch(a) for a in self._agents))
+
         rows = self.query_one("#rows", VerticalScroll)
         await rows.remove_children()
         in_panel = {a.name for a in self.config.roster}
         n_installed = sum(1 for a in self._agents if a.installed)
         self.query_one("#hint", Static).update(
-            f"{n_installed} installed · {len(self._agents)} known. "
-            "Sign out to force re-auth, then log in with the account you want.")
+            f"{n_installed} installed · {len(self._agents)} known. 👤 = the account each is "
+            "signed in as. Sign out to force re-auth, then log in with the account you want.")
         for a in self._agents:
-            await rows.mount(self._row(a, a.name in in_panel))
+            await rows.mount(self._row(a, a.name in in_panel, accounts.get(a.name, "")))
 
-    def _row(self, a: DetectedAgent, in_panel: bool) -> Horizontal:
+    def _row(self, a: DetectedAgent, in_panel: bool, account: str = "") -> Horizontal:
         tag = " · in panel" if in_panel else ""
         if a.installed:
-            state = f"✓ {a.label} {a.version}{tag}".rstrip()
+            who = f"   👤 {account}" if account else ""
+            state = f"✓ {a.label} {a.version}{who}{tag}".rstrip()
+            if not a.auth_cmd:  # key-based agent (e.g. Gemini): no login command
+                var = ftu.KIND_KEYVAR.get(a.kind, "API key")
+                state += f"\n     auth via {var} — `agentpanel account set {a.name} <KEY>`"
         elif a.installable:
             state = f"· {a.label} — not installed"
         else:

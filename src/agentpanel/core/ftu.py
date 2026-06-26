@@ -14,6 +14,8 @@ headlessly:
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +132,45 @@ async def relogin(agent: DetectedAgent) -> InstallResult:
 async def status(agent: DetectedAgent) -> InstallResult:
     """Show the agent's auth status (which account it's signed in as)."""
     return await run_interactive(agent.auth_status_cmd)
+
+
+# Env var that carries an API-key account, per agent kind (for key-based auth like Gemini).
+KIND_KEYVAR = {
+    "claude_code": "ANTHROPIC_API_KEY",
+    "cursor_agent": "CURSOR_API_KEY",
+    "codex": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+async def auth_account(agent: DetectedAgent, timeout: float = 20.0) -> str:
+    """Return a short label of which account this agent is signed in as — the email from
+    its status command if it has one, else its API-key var if set, else '' (unknown)."""
+    cmd = agent.auth_status_cmd
+    if cmd:
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            text = out_b.decode(errors="replace")
+        except Exception:
+            text = ""
+        m = _EMAIL_RE.search(text)
+        if m:
+            return m.group(0)
+        low = text.lower()
+        if any(s in low for s in ("not logged in", "logged out", "not signed in", "no account")):
+            return "(signed out)"
+        for line in text.splitlines():
+            line = line.strip()
+            if line and "logged in" in line.lower():
+                return line[:48]
+    var = KIND_KEYVAR.get(agent.kind)
+    if var and os.environ.get(var):
+        return f"API key ({var})"
+    return ""
 
 
 # ---------------------------------------------------------------------------
