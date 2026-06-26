@@ -50,7 +50,8 @@ class DetectedAgent:
     auth_cmd: str = ""
     auth_logout_cmd: str = ""
     auth_status_cmd: str = ""
-    auth_note: str = ""  # how to auth when there's no login command (e.g. Gemini → API key)
+    auth_note: str = ""  # how to auth when there's no login command (e.g. Antigravity)
+    auth_gui: bool = False  # auth happens in a desktop GUI app, not a terminal flow
     docs: str = ""
     health: Optional[HealthStatus] = None
 
@@ -75,6 +76,7 @@ async def _probe(entry: Dict[str, object]) -> DetectedAgent:
                   auth_logout_cmd=str(entry.get("auth_logout") or ""),
                   auth_status_cmd=str(entry.get("auth_status") or ""),
                   auth_note=str(entry.get("auth_note") or ""),
+                  auth_gui=bool(entry.get("auth_gui")),
                   docs=str(entry.get("docs") or ""))
     if drivable:
         try:
@@ -244,13 +246,11 @@ def _read_json(path: str) -> dict:
 
 
 def _antigravity_account() -> str:
-    """Antigravity (Google's agent IDE) records its signed-in Google account locally; when
-    signed out it keeps the last account under ``old`` — surface that, flagged."""
+    """Best-known Google account for Antigravity. Its live login lives in the desktop app's
+    own store (not introspectable headlessly), so we surface the account it last recorded —
+    without claiming a sign-in state we can't verify."""
     d = _read_json("~/.gemini/google_accounts.json")
-    if d.get("active"):
-        return str(d["active"])
-    old = d.get("old") or []
-    return f"{old[-1]} (signed out)" if old else ""
+    return str(d.get("active") or (d.get("old") or [""])[-1] or "")
 
 
 async def account_status(agent: DetectedAgent, timeout: float = 20.0) -> AccountStatus:
@@ -302,6 +302,7 @@ async def account_status(agent: DetectedAgent, timeout: float = 20.0) -> Account
             st.detail = f"auth_mode: {creds['auth_mode']}"
     elif kind == "antigravity":
         st.account = _antigravity_account()
+        st.detail = "sign-in is managed inside the Antigravity desktop app"
     if not st.account:
         var = KIND_KEYVAR.get(kind)
         if var and os.environ.get(var):

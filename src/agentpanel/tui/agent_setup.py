@@ -120,7 +120,8 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         buttons = []
         if a.installed:
             if a.auth_cmd:
-                buttons.append(Button("Log in", id=f"login__{a.name}", variant="success"))
+                label = "Open app" if a.auth_gui else "Log in"
+                buttons.append(Button(label, id=f"login__{a.name}", variant="success"))
             if a.auth_logout_cmd:
                 buttons.append(Button("Sign out", id=f"logout__{a.name}", variant="warning"))
             if a.auth_cmd and a.auth_logout_cmd:
@@ -151,6 +152,17 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
                 print(st.report(agent.label))
                 input("\nPress Enter to return to AgentPanel…")
             await self._rebuild()
+            return
+        if action == "login" and agent.auth_gui:
+            # Desktop app: launch it in its own window (don't suspend the TUI for a
+            # terminal flow that the GUI would just hide), and acknowledge clearly.
+            try:
+                subprocess.Popen(agent.auth_cmd, shell=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.notify(f"Opened {agent.label} — sign in there, then reopen this "
+                            "panel to refresh its account.", timeout=6)
+            except Exception as exc:  # pragma: no cover - launch failure
+                self.notify(f"couldn't open {agent.label}: {exc}", severity="error")
             return
         # Run attached to the terminal so npm output / browser logins / prompts are visible.
         cmds = {"install": agent.install_cmd, "login": agent.auth_cmd,

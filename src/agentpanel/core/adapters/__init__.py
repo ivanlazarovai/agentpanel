@@ -70,6 +70,7 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "adapter": False,
         "install": "open https://antigravity.google",  # download (no headless CLI yet)
         "auth": "open -a Antigravity",  # sign in with Google inside the app
+        "auth_gui": True,  # GUI app — launch it (don't suspend the TUI for a terminal flow)
         "auth_note": "Sign in with your Google account inside the Antigravity app",
         "docs": "https://antigravity.google",
     },
