@@ -144,33 +144,170 @@ KIND_KEYVAR = {
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
+# Normalize raw plan tokens (claude `subscriptionType`, cursor "Subscription Tier",
+# codex `chatgpt_plan_type`) into display labels.
+_PLAN_LABEL = {"max": "Max", "pro": "Pro", "pro+": "Pro+", "plus": "Plus",
+               "ultra": "Ultra", "team": "Team", "free": "Free", "business": "Business"}
+
+# Approximate public list prices (USD/mo). Plans & prices change constantly and tiers
+# overlap (e.g. Claude "max" is sold at two price points) — this is only a hint; the live
+# figure lives in each provider's dashboard.
+PLAN_PRICE = {
+    ("claude_code", "max"): "≈ $100–200/mo list",
+    ("claude_code", "pro"): "≈ $20/mo list",
+    ("cursor_agent", "pro+"): "≈ $60/mo list",
+    ("cursor_agent", "pro"): "≈ $20/mo list",
+    ("cursor_agent", "ultra"): "≈ $200/mo list",
+    ("codex", "plus"): "≈ $20/mo list",
+    ("codex", "pro"): "≈ $200/mo list",
+    ("codex", "team"): "≈ $30/user/mo list",
+}
+
+# Live limits / remaining usage are NOT exposed headlessly by any of these CLIs — point the
+# user at where the real figure lives instead of fabricating one.
+USAGE_HINT = {
+    "claude_code": "limits/usage not in CLI — run `claude` then `/usage`",
+    "cursor_agent": "limits/usage not in CLI — see cursor.com/dashboard",
+    "codex": "limits/usage not in CLI — see chatgpt.com settings",
+    "gemini": "limits/usage not in CLI — see Google AI Studio quota",
+}
+
+
+@dataclass
+class AccountStatus:
+    """What we can learn about an agent's signed-in account from its CLI / stored creds."""
+
+    account: str = ""   # email or account id
+    plan: str = ""      # display label, e.g. "Max", "Pro+", "Plus"
+    price: str = ""     # list-price hint for that plan (approximate)
+    renews: str = ""    # e.g. "renews 2026-07-04"
+    usage: str = ""     # where to find live limits/usage (CLIs don't report it)
+    detail: str = ""    # raw status text, shown in the expanded view
+
+    @property
+    def line(self) -> str:
+        """Compact one-liner for the 👤 row: account · plan."""
+        return " · ".join(b for b in (self.account, self.plan) if b)
+
+    def report(self, label: str) -> str:
+        """Multi-line block for the Status view."""
+        rows = [f"{label}",
+                f"  account : {self.account or '—'}",
+                f"  plan    : {self.plan or '—'}" + (f"   {self.price}" if self.price else "")]
+        if self.renews:
+            rows.append(f"  {self.renews}")
+        rows.append(f"  usage   : {self.usage or 'not reported by this CLI'}")
+        if self.detail:
+            rows.append("  ── raw ──")
+            rows.extend("  " + ln for ln in self.detail.splitlines()[:12])
+        return "\n".join(rows)
+
+
+def _jwt_claims(token: str) -> dict:
+    """Decode a JWT payload (no signature check — we only read our own stored token)."""
+    import base64
+    import json
+
+    try:
+        p = token.split(".")[1]
+        p += "=" * (-len(p) % 4)
+        return json.loads(base64.urlsafe_b64decode(p))
+    except Exception:
+        return {}
+
+
+async def _run_capture(cmd: str, timeout: float) -> str:
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return out_b.decode(errors="replace")
+    except Exception:
+        return ""
+
+
+def _read_json(path: str) -> dict:
+    import json
+
+    try:
+        with open(os.path.expanduser(path)) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _gemini_account() -> str:
+    """Gemini stores its signed-in Google account locally (no status command)."""
+    d = _read_json("~/.gemini/google_accounts.json")
+    if d.get("active") or d.get("email"):
+        return d.get("active") or d.get("email")
+    claims = _jwt_claims(_read_json("~/.gemini/oauth_creds.json").get("id_token", ""))
+    return claims.get("email", "")
+
+
+async def account_status(agent: DetectedAgent, timeout: float = 20.0) -> AccountStatus:
+    """Gather the signed-in account, plan, renewal and a usage pointer for one agent.
+
+    Each provider exposes this differently — Claude in `auth status` JSON, Cursor in
+    `about`, Codex inside its stored OAuth token, Gemini in a local creds file — so this
+    is per-kind. Account ID and plan are obtainable for all signed-in agents; live
+    limits/usage are not exposed by any CLI, so we point to the dashboard instead."""
+    kind = agent.kind
+    st = AccountStatus(usage=USAGE_HINT.get(kind, ""))
+    plan_key = ""
+    if kind == "claude_code":
+        import json
+
+        text = await _run_capture("claude auth status", timeout)
+        st.detail = text.strip()
+        try:
+            d = json.loads(text)
+            st.account = d.get("email") or d.get("orgName") or ""
+            plan_key = str(d.get("subscriptionType") or "").lower()
+        except Exception:
+            m = _EMAIL_RE.search(text)
+            st.account = m.group(0) if m else ""
+    elif kind == "cursor_agent":
+        text = await _run_capture("cursor-agent about", timeout)
+        st.detail = text.strip()
+        for ln in text.splitlines():
+            low = ln.lower()
+            if "user email" in low:
+                m = _EMAIL_RE.search(ln)
+                st.account = m.group(0) if m else st.account
+            elif "subscription tier" in low:
+                plan_key = ln.split()[-1].lower()  # "Subscription Tier   Pro+" -> "pro+"
+        if not st.account:
+            m = _EMAIL_RE.search(await _run_capture("cursor-agent status", timeout))
+            st.account = m.group(0) if m else ""
+    elif kind == "codex":
+        creds = _read_json("~/.codex/auth.json")
+        toks = creds.get("tokens") or {}
+        claims = _jwt_claims(toks.get("id_token", ""))
+        st.account = claims.get("email") or toks.get("account_id") or ""
+        auth = claims.get("https://api.openai.com/auth") or {}
+        plan_key = str(auth.get("chatgpt_plan_type") or "").lower()
+        until = auth.get("chatgpt_subscription_active_until")
+        if until:
+            st.renews = f"renews {str(until)[:10]}"
+        if creds.get("auth_mode"):
+            st.detail = f"auth_mode: {creds['auth_mode']}"
+    elif kind == "gemini":
+        st.account = _gemini_account()
+    if not st.account:
+        var = KIND_KEYVAR.get(kind)
+        if var and os.environ.get(var):
+            st.account = f"API key ({var})"
+    if plan_key:
+        st.plan = _PLAN_LABEL.get(plan_key, plan_key[:1].upper() + plan_key[1:])
+        st.price = PLAN_PRICE.get((kind, plan_key), "")
+    return st
+
 
 async def auth_account(agent: DetectedAgent, timeout: float = 20.0) -> str:
-    """Return a short label of which account this agent is signed in as — the email from
-    its status command if it has one, else its API-key var if set, else '' (unknown)."""
-    cmd = agent.auth_status_cmd
-    if cmd:
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            text = out_b.decode(errors="replace")
-        except Exception:
-            text = ""
-        m = _EMAIL_RE.search(text)
-        if m:
-            return m.group(0)
-        low = text.lower()
-        if any(s in low for s in ("not logged in", "logged out", "not signed in", "no account")):
-            return "(signed out)"
-        for line in text.splitlines():
-            line = line.strip()
-            if line and "logged in" in line.lower():
-                return line[:48]
-    var = KIND_KEYVAR.get(agent.kind)
-    if var and os.environ.get(var):
-        return f"API key ({var})"
-    return ""
+    """Compact 'account · plan' label for the setup row (see :func:`account_status`)."""
+    return (await account_status(agent, timeout)).line
 
 
 # ---------------------------------------------------------------------------

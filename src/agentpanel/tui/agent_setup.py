@@ -117,8 +117,9 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
                 buttons.append(Button("Sign out", id=f"logout__{a.name}", variant="warning"))
             if a.auth_cmd and a.auth_logout_cmd:
                 buttons.append(Button("Re-login", id=f"relogin__{a.name}", variant="primary"))
-            if a.auth_status_cmd:
-                buttons.append(Button("Status", id=f"status__{a.name}"))
+            # Status reads account/plan/renewal from each CLI or its stored creds — works
+            # even for agents (codex, gemini) that have no `status` subcommand.
+            buttons.append(Button("Status", id=f"status__{a.name}"))
         elif a.installable:
             buttons.append(Button("Install", id=f"install__{a.name}", variant="primary"))
         return Horizontal(Label(state), *buttons, classes="agent-row")
@@ -135,10 +136,17 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         agent = next((a for a in self._agents if a.name == name), None)
         if agent is None:
             return
+        if action == "status":
+            st = await ftu.account_status(agent)
+            with self.app.suspend():
+                print(f"\n── {agent.label} account ──\n")
+                print(st.report(agent.label))
+                input("\nPress Enter to return to AgentPanel…")
+            await self._rebuild()
+            return
         # Run attached to the terminal so npm output / browser logins / prompts are visible.
         cmds = {"install": agent.install_cmd, "login": agent.auth_cmd,
-                "logout": agent.auth_logout_cmd, "relogin": agent.auth_logout_cmd,
-                "status": agent.auth_status_cmd}
+                "logout": agent.auth_logout_cmd, "relogin": agent.auth_logout_cmd}
         cmd = cmds.get(action)
         if not cmd:
             return

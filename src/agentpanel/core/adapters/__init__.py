@@ -68,6 +68,9 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "probe": "gemini",
         "adapter": False,
         "install": "npm install -g @google/gemini-cli",
+        # Gemini has no login subcommand — running it interactively offers "Login with
+        # Google" (browser OAuth). Pick that, then /quit to return.
+        "auth": "gemini",
         "docs": "https://github.com/google-gemini/gemini-cli",
     },
     {
