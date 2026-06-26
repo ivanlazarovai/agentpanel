@@ -114,6 +114,31 @@ class Session:
             self.persist()  # remember where we left off
         return self.outcome
 
+    def working_agents(self) -> List[str]:
+        """Names of agents with a subprocess running right now (burning tokens)."""
+        return [p.name for p in self.panelists if p.adapter.is_busy]
+
+    async def stop_agent(self, name: str) -> bool:
+        """Kill one agent's running work (user stop). Returns True if it was running."""
+        p = next((x for x in self.panelists if x.name == name), None)
+        if p is None or not p.adapter.is_busy:
+            return False
+        await p.adapter.terminate()
+        self.bus.publish(EventKind.LOG, level="warning", message=f"{name} stopped by user")
+        return True
+
+    async def stop_all(self) -> List[str]:
+        """Kill every running agent. Returns the names that were stopped."""
+        stopped = []
+        for p in self.panelists:
+            if p.adapter.is_busy:
+                await p.adapter.terminate()
+                stopped.append(p.name)
+        if stopped:
+            self.bus.publish(EventKind.LOG, level="warning",
+                             message=f"stopped: {', '.join(stopped)}")
+        return stopped
+
     async def execute(self, agent_names: List[str], review_rounds: int = 0) -> Dict[str, str]:
         """Have the named agents carry out the agreed plan in their own worktrees — with
         **coopetition**: the agents that weren't selected don't go idle. They observe the
@@ -194,6 +219,7 @@ class Session:
                          gate_env=self._gate_env())
         failed = False
         cost = None
+        tokens = None
         started = time.monotonic()
         async for ev in panelist.adapter.execute(prompt, ctx):
             if ev.session_ref:
@@ -207,6 +233,7 @@ class Session:
                 self.bus.publish(EventKind.PANELIST_ERROR, agent=name, message=ev.detail)
             elif ev.type == "done":
                 cost = ev.cost_usd
+                tokens = ev.tokens
         committed = None
         if not failed and await self.worktrees.has_changes(name):
             committed = await self.worktrees.commit_all(
@@ -215,7 +242,8 @@ class Session:
         diffstat = await self.worktrees.diffstat(name)
         self.bus.publish(EventKind.EXECUTION_DONE, agent=name, branch=handle.branch,
                          committed=bool(committed), role="worker", round=rnd,
-                         duration_ms=int((time.monotonic() - started) * 1000), cost_usd=cost)
+                         duration_ms=int((time.monotonic() - started) * 1000), cost_usd=cost,
+                         tokens=tokens)
         self.bus.publish(EventKind.DIFF_READY, agent=name, branch=handle.branch, diffstat=diffstat)
         return diffstat
 

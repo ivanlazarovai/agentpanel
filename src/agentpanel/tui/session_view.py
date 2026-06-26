@@ -35,7 +35,25 @@ class AgentCard(Collapsible):
         self._active = False  # currently thinking/working this turn
         self._started = 0.0
         self._steps = 0  # tool calls observed this turn (a legibility signal)
+        self._spend = {"cost": 0.0, "in": 0, "out": 0}  # accumulated across all passes
         super().__init__(self._turns, title=self._render_title(), collapsed=True)
+
+    def add_spend(self, cost, tokens) -> None:
+        """Accumulate this agent's token usage / cost from a finished pass."""
+        if cost:
+            self._spend["cost"] += float(cost)
+        if isinstance(tokens, dict):
+            self._spend["in"] += int(tokens.get("input") or 0)
+            self._spend["out"] += int(tokens.get("output") or 0)
+        self.title = self._render_title()
+
+    def _spend_str(self) -> str:
+        s = self._spend
+        if not (s["in"] or s["out"] or s["cost"]):
+            return ""
+        k = lambda n: f"{n/1000:.1f}k" if n >= 1000 else str(n)  # noqa: E731
+        money = f" ${s['cost']:.3f}" if s["cost"] else ""
+        return f"   ⛁ {k(s['in'])}↑{k(s['out'])}↓{money}"
 
     @staticmethod
     def _summary_line(status: str, approach: str, fit) -> str:
@@ -46,10 +64,11 @@ class AgentCard(Collapsible):
         if self._active:
             el = int(time.monotonic() - self._started)
             spinner = "◐◓◑◒"[int(el) % 4]
-            return f"{self._agent}   {spinner} working · {self._steps} steps · {el}s"
+            return (f"{self._agent}   {spinner} working · {self._steps} steps · {el}s"
+                    + self._spend_str())
         tag = {"proceed": "  ▶ PROCEED", "stand_down": "  ■ stand down",
                "monitor": "  👁 observing", "candidate": "  ? candidate"}.get(self._decision, "")
-        return f"{self._agent}   " + self._summary_line(*self._last) + tag
+        return f"{self._agent}   " + self._summary_line(*self._last) + self._spend_str() + tag
 
     # -- live progress -----------------------------------------------------
 
@@ -124,10 +143,31 @@ class SessionView(VerticalScroll):
 
     def compose(self):
         yield Static("● initializing…", id="consensus-bar", classes="consensus-bar")
+        yield Static("", id="spend-bar", classes="open-cmd")
         for agent in self._agents:
             card = AgentCard(agent)
             self._cards[agent] = card
             yield card
+
+    def _add_spend(self, agent: str, d) -> None:
+        """Accumulate an agent's tokens/cost into its card and the session total bar."""
+        card = self._cards.get(agent)
+        if card is None:
+            return
+        card.add_spend(d.get("cost_usd"), d.get("tokens"))
+        tot = {"cost": 0.0, "in": 0, "out": 0}
+        for c in self._cards.values():
+            tot["cost"] += c._spend["cost"]
+            tot["in"] += c._spend["in"]
+            tot["out"] += c._spend["out"]
+        if tot["in"] or tot["out"] or tot["cost"]:
+            k = lambda n: f"{n/1000:.1f}k" if n >= 1000 else str(n)  # noqa: E731
+            money = f" · ${tot['cost']:.3f}" if tot["cost"] else ""
+            try:
+                self.query_one("#spend-bar", Static).update(
+                    f"Σ session: {k(tot['in'])} in ↑ {k(tot['out'])} out ↓{money}")
+            except Exception:
+                pass
 
     # -- event application -------------------------------------------------
 
@@ -194,12 +234,8 @@ class SessionView(VerticalScroll):
         turn = max((t for (a, t) in self._turn_static if a == agent), default=0)
         text = self._turn_text.get((agent, turn), "")
         approach = extract_label(text) or (d.get("summary") or "done")
-        # Account for the wait: append elapsed + spend so a long pass reads as work done.
-        suffix = ""
-        if d.get("duration_ms"):
-            suffix += f"  ·{d['duration_ms'] // 1000}s"
-        if d.get("cost_usd"):
-            suffix += f" ${d['cost_usd']:.2f}"
+        suffix = f"  ·{d['duration_ms'] // 1000}s" if d.get("duration_ms") else ""
+        self._add_spend(agent, d)  # accumulate this pass's tokens/cost (card + session bar)
         # fit comes from the engine (parsed from the full result, not the streamed tokens).
         self._cards[agent].set_summary("✓", approach + suffix, d.get("fit"))
 
@@ -219,6 +255,9 @@ class SessionView(VerticalScroll):
         card = self._cards.get(d["agent"])
         if card is not None:
             card.set_decision(d["decision"])
+
+    async def _on_execution_done(self, d) -> None:
+        self._add_spend(d["agent"], d)  # execution tokens/cost count toward the agent + total
 
     async def _on_diff_ready(self, d) -> None:
         card = self._cards.get(d["agent"])

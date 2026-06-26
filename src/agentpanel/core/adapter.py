@@ -131,6 +131,23 @@ class AgentAdapter(ABC):
         self.name = config.name
         self.binary = config.binary or self.default_binary
         self.model = config.model
+        self._procs: set = set()  # live subprocesses, so the user can stop a runaway agent
+
+    @property
+    def is_busy(self) -> bool:
+        """True while this agent has a subprocess running (burning tokens)."""
+        return bool(self._procs)
+
+    async def terminate(self) -> None:
+        """Kill this agent's running work immediately (user pressed stop). Its stream then
+        ends and the engine records it as failed-this-turn; the panel proceeds without it."""
+        for proc in list(self._procs):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        self._procs.clear()
+        await self.aclose()  # also tear down any persistent warm process (e.g. Claude)
 
     # -- introspection -----------------------------------------------------
 
@@ -267,6 +284,7 @@ class CliAdapter(AgentAdapter):
             yield AdapterEvent.error(f"{self.name}: failed to launch: {exc}")
             return
 
+        self._procs.add(proc)  # track so terminate() can kill a runaway agent
         collected: List[str] = []
         session_ref: Optional[str] = None
         assert proc.stdout is not None
@@ -304,13 +322,19 @@ class CliAdapter(AgentAdapter):
                             tokens=ev.tokens,
                         )
                         await _drain(proc)
+                        self._procs.discard(proc)
                         return
                     yield ev
         except Exception as exc:  # pragma: no cover - stream failure
             yield AdapterEvent.error(f"{self.name}: stream error: {exc}")
 
-        # Stream ended without an explicit done line; synthesize one.
+        self._procs.discard(proc)
+        # Stream ended without an explicit done line; synthesize one. A user stop kills the
+        # process (negative rc); report it cleanly rather than as a crash.
         rc = await proc.wait()
+        if rc and rc < 0:
+            yield AdapterEvent.error(f"{self.name}: stopped")
+            return
         if rc != 0:
             err = (await proc.stderr.read()).decode(errors="replace") if proc.stderr else ""
             blob = (err + "\n" + "".join(collected)).strip()

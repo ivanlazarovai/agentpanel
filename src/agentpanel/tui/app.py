@@ -17,7 +17,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Input, Static, TabbedContent, TabPane
+from textual.widgets import Button, Footer, Header, Input, Static, TabbedContent, TabPane
 
 from ..core import config as cfg
 from ..core.config import Config
@@ -125,6 +125,38 @@ class ChangeDirScreen(ModalScreen[Optional[Path]]):
         self.dismiss(None)
 
 
+class StopAgentsScreen(ModalScreen[Optional[str]]):
+    """Pick a running agent to stop (or all). Dismisses with the agent name, '*', or None."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, agents) -> None:
+        super().__init__()
+        self._agents = list(agents)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="stop-box"):
+            yield Static("[bold]Stop a running agent[/]\n[dim]Kills its current work now; the "
+                         "panel continues without it this turn.[/]", markup=True)
+            for a in self._agents:
+                yield Button(f"■ Stop {a}", id=f"stop__{a}", variant="error")
+            if len(self._agents) > 1:
+                yield Button("■ Stop ALL", id="stopall", variant="error")
+            yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "cancel":
+            self.dismiss(None)
+        elif bid == "stopall":
+            self.dismiss("*")
+        else:
+            self.dismiss(bid.partition("__")[2])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class AgentPanelApp(App):
     CSS = """
     #ask { height: 3; }
@@ -151,6 +183,9 @@ class AgentPanelApp(App):
     #dir-box { width: 80; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
     #dir-box Input { margin-top: 1; }
     ChangeDirScreen { align: center middle; }
+    StopAgentsScreen { align: center middle; }
+    #stop-box { width: 64; height: auto; border: thick $error; background: $surface; padding: 1 2; }
+    #stop-box Button { width: 100%; margin-top: 1; }
     """
     # priority=True so these fire even while the ask Input is focused (Ctrl-A/E/O would
     # otherwise be consumed by the input as cursor/edit keys).
@@ -159,6 +194,7 @@ class AgentPanelApp(App):
         Binding("ctrl+d", "change_dir", "Change folder", priority=True),
         Binding("ctrl+a", "agent_setup", "Agent setup", priority=True),
         Binding("ctrl+e", "execute", "Execute elected", priority=True),
+        Binding("ctrl+s", "stop_agents", "Stop agent(s)", priority=True),
         Binding("ctrl+o", "open_session", "Open agent's session", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
@@ -358,6 +394,35 @@ class AgentPanelApp(App):
         if not tabs.display or not tabs.active:
             return None
         return self.manager.get(str(tabs.active).removeprefix("pane-"))
+
+    def action_stop_agents(self) -> None:
+        """Stop one or more running agents in the active session (Ctrl-S) — for when an
+        agent goes off and burns tokens."""
+        session = self._active_session()
+        if session is None:
+            self.notify("No active session.", severity="warning")
+            return
+        working = session.working_agents()
+        if not working:
+            self.notify("No agents are running right now.", severity="warning")
+            return
+
+        def _done(choice) -> None:
+            if not choice:
+                return
+
+            async def go() -> None:
+                if choice == "*":
+                    stopped = await session.stop_all()
+                    self.notify(f"Stopped: {', '.join(stopped) or 'none'}", severity="warning")
+                else:
+                    ok = await session.stop_agent(choice)
+                    self.notify(f"Stopped {choice}." if ok else f"{choice} wasn't running.",
+                                severity="warning")
+
+            self.run_worker(go(), exclusive=False)
+
+        self.push_screen(StopAgentsScreen(working), _done)
 
     def action_execute(self) -> None:
         """Run the active session's elected agent (Ctrl-E). Gated commands prompt live."""
