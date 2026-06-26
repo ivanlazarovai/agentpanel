@@ -161,8 +161,9 @@ class Session:
                 "watching and want you to succeed; incorporate or rebut) ===\n" + feedback
             )
         # The agent owns its edits, tools, and commits; the panel only relays + reads.
+        # Execution gets full effort (the real work) unless the agent overrides it.
         ctx = RunContext(workdir=handle.path, session_ref=panelist.session_ref,
-                         model=panelist.config.model)
+                         model=panelist.config.model, effort=panelist.config.effort)
         failed = False
         cost = None
         started = time.monotonic()
@@ -204,8 +205,10 @@ class Session:
             f"REQUEST:\n{self.question}\n\nPLAN:\n{self._plan_text(worker)}\n\n"
             f"{worker}'s PROGRESS (diff):\n{(progress or '(no changes yet)')[:4000]}"
         )
+        # Observing/coaching is advisory — keep it cheap and fast.
         ctx = RunContext(workdir=handle.path, session_ref=panelist.session_ref,
-                         model=panelist.config.model)
+                         model=panelist.config.model,
+                         effort=panelist.config.effort or self.config.settings.plan_effort)
         collected: List[str] = []
         async for ev in panelist.adapter.plan(prompt, ctx):
             if ev.session_ref:

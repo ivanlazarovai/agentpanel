@@ -79,6 +79,30 @@ async def test_detect_carries_auth_command():
     assert by_name["cursor"].auth_cmd == "cursor-agent login"
 
 
+@pytest.mark.asyncio
+async def test_auto_bootstrap_preserves_existing_and_is_additive(tmp_path):
+    # Both drivable agents already verified -> reused untouched, no install/login/verify calls.
+    from agentpanel.core.config import AgentConfig, Config, JudgeConfig, Settings
+
+    existing = Config(
+        roster=[
+            AgentConfig(name="claude", kind="claude_code", enabled=True, verified=True),
+            AgentConfig(name="cursor", kind="cursor_agent", enabled=True, verified=True),
+        ],
+        judge=JudgeConfig(backend="designated_agent", agent="claude"),
+        settings=Settings(consensus_threshold=0.7, max_turns=4),
+        permissions={"granted_dirs": ["/somewhere"], "rules": [], "default": "ask"},
+    )
+    config = await ftu.auto_bootstrap(tmp_path, existing=existing,
+                                      do_install=False, do_login=False)
+    assert {a.name for a in config.panel()} >= {"claude", "cursor"}  # both kept
+    assert config.judge.backend == "designated_agent"               # judge preserved
+    assert config.settings.consensus_threshold == 0.7               # settings preserved
+    granted = config.permissions["granted_dirs"]
+    assert "/somewhere" in granted                                  # prior grant kept
+    assert str(tmp_path.resolve()) in granted                       # base dir added
+
+
 def test_assemble_config_roundtrips_choices():
     choices = [
         AgentChoice(name="claude", kind="claude_code", model="claude-opus-4-8", verified=True),

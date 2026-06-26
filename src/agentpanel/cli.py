@@ -239,21 +239,32 @@ def _launch(mock: bool) -> int:
     if mock:
         run_tui(config=_demo_config(), demo_question="Design the session persistence layer")
         return 0
-    if not cfg.config_exists():
-        # Self-aware first run: no separate command needed — bootstart from zero.
+    # Self-aware + adaptive: bootstrap when there's no config OR the panel is thin
+    # (< 2 ready agents). A real panel needs at least two agents to deliberate.
+    config = cfg.load() if cfg.config_exists() else None
+    ready = [a.name for a in config.panel()] if config else []
+    if len(ready) < 2:
         from .core import ftu
 
-        print("No configuration found — bootstrapping AgentPanel (one-time)…\n")
-        config = asyncio.run(ftu.auto_bootstrap(Path.cwd(), emit=lambda m: print(f"  {m}")))
+        if not config:
+            print("No configuration found — bootstrapping AgentPanel…\n")
+        else:
+            print(f"Panel is thin ({', '.join(ready) or 'no agents'}) — looking for more "
+                  "agents to bring in…\n")
+        config = asyncio.run(
+            ftu.auto_bootstrap(Path.cwd(), existing=config, emit=lambda m: print(f"  {m}"))
+        )
         cfg.save(config)
         panel = [a.name for a in config.panel()]
         if not panel:
             print("\nNo agents are ready yet — resolve the notes above and run `agentpanel` again "
                   "(or `agentpanel --mock` for a demo).")
             return 1
-        print(f"\nReady: {', '.join(panel)}. Launching…\n")
-    else:
-        config = cfg.load()
+        if len(panel) < 2:
+            print(f"\nOnly {panel[0]} is ready. Add a second agent (e.g. log in to Cursor) for "
+                  "real deliberation — re-run `agentpanel` to bring it in. Launching with one for now…\n")
+        else:
+            print(f"\nReady: {', '.join(panel)}. Launching…\n")
     run_tui(config=config)
     return 0
 

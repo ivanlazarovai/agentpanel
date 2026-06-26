@@ -50,6 +50,7 @@ class AgentConfig:
     kind: str  # adapter key
     binary: Optional[str] = None  # path override; None -> adapter default
     model: Optional[str] = None
+    effort: Optional[str] = None  # per-agent effort override (else Settings.plan_effort)
     enabled: bool = True
     verified: bool = False  # passed the FTU dev-cycle handshake
     weight: float = 1.0  # vote weight in consensus (default equal)
@@ -94,6 +95,7 @@ class Settings:
     max_turns: int = 3  # Y: critique turns before escalation
     barrier_timeout_s: float = 120.0  # per-turn deadline for slow/dead agents
     escalation_top_n: int = 3  # options shown to the user on non-convergence
+    plan_effort: str = "medium"  # effort for plan/critique passes (keeps deliberation snappy)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

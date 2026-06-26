@@ -61,6 +61,7 @@ class RunContext:
     workdir: Path  # the agent's own git worktree
     session_ref: Optional[str] = None  # resume handle from a prior turn (None = fresh)
     model: Optional[str] = None
+    effort: Optional[str] = None  # low|medium|high|xhigh|max — bound exploration cost/latency
     timeout_s: Optional[float] = None
     turn: int = 0  # 0 = isolated planning; 1..Y = critique turns
 

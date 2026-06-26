@@ -67,6 +67,10 @@ class ClaudeCodeAdapter(CliAdapter):
         model = ctx.model or self.model
         if model:
             args += ["--model", model]
+        # Bound exploration: planning/critique runs at a lighter effort than Claude Code's
+        # default (xhigh), which otherwise explores the whole repo for minutes per pass.
+        if ctx.effort:
+            args += ["--effort", ctx.effort]
         if ctx.session_ref:
             args += ["--resume", ctx.session_ref]
         # Ensure the agent can read the worktree it's running in.

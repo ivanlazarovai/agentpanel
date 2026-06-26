@@ -325,26 +325,36 @@ def recommend_judge(verified_agents: List[str]) -> JudgeConfig:
 async def auto_bootstrap(
     repo: Path,
     *,
+    existing: Optional[Config] = None,
     do_install: bool = True,
     do_login: bool = True,
     emit=lambda _msg: None,
 ) -> Config:
-    """From *no configuration*, bring AgentPanel up to a working multi-agent state.
+    """Bring AgentPanel up to a working multi-agent state — from zero, or topping up a thin
+    panel.
 
-    For each drivable agent: install it if missing, run its native login if the
-    verification handshake says it's not authed, verify it understands the repo, and add
-    it to the roster. Then pick a judge, grant the base directory, write the shared brief,
-    and return a ready-to-save :class:`Config`. Install/login are interactive (they attach
-    to the terminal), so this runs from a real terminal or a suspended TUI.
+    For each drivable agent: reuse it untouched if it's already verified in ``existing``
+    (no cost), else install it if missing, run its native login if the verification
+    handshake says it's not authed, and verify it. Then assemble a ready-to-save
+    :class:`Config`, preserving ``existing`` judge/settings/permissions and granting the
+    base directory. Install/login are interactive (they attach to the terminal), so this
+    runs from a real terminal or a suspended TUI.
     """
     repo = Path(repo).resolve()
     write_brief(repo, ["AGENTS.md"])
-    emit("wrote AGENTS.md (shared dev-cycle brief)")
 
+    prior = {a.name: a for a in (existing.roster if existing else []) if a.verified}
     roster: List[AgentConfig] = []
     verified: List[str] = []
 
     for agent in [a for a in await detect() if a.drivable]:
+        # Already configured + verified? Keep it as-is — don't re-verify (saves cost).
+        if agent.name in prior:
+            roster.append(prior[agent.name])
+            verified.append(agent.name)
+            emit(f"{agent.label}: ✓ already configured")
+            continue
+
         if not agent.installed and do_install and agent.installable:
             emit(f"installing {agent.label}…  ($ {agent.install_cmd})")
             res = await install(agent)
@@ -366,12 +376,20 @@ async def auto_bootstrap(
             verified.append(agent.name)
         emit(f"{agent.label}: {'✓ ready' if vr.ok else '· ' + vr.detail}")
 
+    # Preserve the user's existing choices; only pick a judge if there isn't one yet.
+    judge = existing.judge if existing else recommend_judge(verified)
+    settings = existing.settings if existing else Settings()
+    granted = list((existing.permissions if existing else {}).get("granted_dirs", []))
+    if str(repo) not in granted:
+        granted.append(str(repo))
     config = Config(
         roster=roster,
-        judge=recommend_judge(verified),
-        settings=Settings(),
+        judge=judge,
+        settings=settings,
         repo=str(repo),
-        permissions={"granted_dirs": [str(repo)], "rules": [], "default": "ask"},
+        permissions={"granted_dirs": granted, "rules":
+                     (existing.permissions if existing else {}).get("rules", []),
+                     "default": (existing.permissions if existing else {}).get("default", "ask")},
     )
     emit(f"panel: {', '.join(verified) or '(none verified yet)'}  ·  judge: {config.judge.backend}")
     return config

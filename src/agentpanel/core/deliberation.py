@@ -135,6 +135,7 @@ class DeliberationEngine:
             workdir=p.workdir,
             session_ref=p.session_ref,
             model=p.config.model,
+            effort=p.config.effort or self.settings.plan_effort,  # bound exploration latency
             turn=turn,
             timeout_s=self.settings.barrier_timeout_s,
         )
