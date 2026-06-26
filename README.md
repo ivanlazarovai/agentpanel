@@ -53,14 +53,17 @@ join a panel — exactly what the FTU verification handshake checks for.)
 ## Try it (no agents, no cost)
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/agentpanel                        # one word: self-bootstraps on first run, then launches
-.venv/bin/agentpanel bootstrap              # explicit cold start: install + log in + verify, then configure
-.venv/bin/agentpanel doctor                 # which agents are installed / installable
-.venv/bin/agentpanel --mock                 # launch the TUI with a built-in mock panel
-.venv/bin/agentpanel ask --mock "Design the session persistence layer"   # headless
-.venv/bin/agentpanel ask --mock --execute --keep claude "..."            # full loop incl. execution
-.venv/bin/pytest -q                          # 31 tests, deterministic
+# Clone, then one command — it sets up its own venv on first run, then runs:
+./agentpanel                       # one word: self-bootstraps env + agents, then launches the TUI
+# (optional) run it from anywhere:
+ln -s "$(pwd)/agentpanel" /usr/local/bin/agentpanel
+
+./agentpanel bootstrap             # explicit cold start: install + log in + verify, then configure
+./agentpanel doctor                # which agents are installed / installable
+./agentpanel --mock                # launch the TUI with a built-in mock panel
+./agentpanel ask --mock "Design the session persistence layer"          # headless
+./agentpanel ask --mock --execute --keep claude --review 1 "..."        # full loop + coopetition
+.venv/bin/pytest -q                # tests (47, deterministic) — venv created by the launcher
 ```
 
 Both `--mock` modes run a built-in panel that starts split and converges over turns —
