@@ -394,20 +394,24 @@ def _launch(mock: bool) -> int:
     # Self-aware + adaptive: bootstrap when there's no config OR the panel is thin
     # (< 2 ready agents). A real panel needs at least two agents to deliberate.
     config = cfg.load() if cfg.config_exists() else None
-    ready = [a.name for a in config.panel()] if config else []
+    # Readiness matches the TUI: an enabled agent counts even if it hasn't (re)passed the
+    # verification handshake. Requiring `verified` here made the launcher re-bootstrap and
+    # print "no agents" on every launch whenever agents were configured but not re-verified.
+    ready = [a.name for a in (config.panel() or config.enabled_agents())] if config else []
     if len(ready) < 2:
         from .core import ftu
 
         if not config:
             print("No configuration found — bootstrapping AgentPanel…\n")
+        elif ready:
+            print(f"Panel is thin (only {', '.join(ready)}) — looking for another agent…\n")
         else:
-            print(f"Panel is thin ({', '.join(ready) or 'no agents'}) — looking for more "
-                  "agents to bring in…\n")
+            print("No agents configured yet — looking for agents to bring in…\n")
         config = asyncio.run(
             ftu.auto_bootstrap(Path.cwd(), existing=config, emit=lambda m: print(f"  {m}"))
         )
         cfg.save(config)
-        panel = [a.name for a in config.panel()]
+        panel = [a.name for a in (config.panel() or config.enabled_agents())]
         if not panel:
             print("\nNo agents are ready yet — resolve the notes above and run `agentpanel` again "
                   "(or `agentpanel --mock` for a demo).")
