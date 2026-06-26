@@ -61,6 +61,11 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         self.config = config
         self.config_path = config_path
         self._agents: list[DetectedAgent] = []
+        self._accounts: dict = {}
+        # Which agents are in the panel (membership the checkboxes edit). Seed from config;
+        # newly-logged-in drivable agents get checked by default (see _rebuild).
+        self._panel: set = {a.name for a in config.roster if a.enabled}
+        self._seen: set = {a.name for a in config.roster}
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="panel"):
@@ -91,23 +96,36 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         gathered = await asyncio.gather(ftu.detect(),
                                         *(acct(e) for e in KNOWN_AGENTS))
         self._agents = gathered[0]
-        accounts = {name: line for name, line in gathered[1:]}
+        self._accounts = {name: line for name, line in gathered[1:]}
+        # Default newly-connected drivable agents into the panel — checked on login.
+        for a in self._agents:
+            if a.name in self._seen:
+                continue
+            self._seen.add(a.name)
+            if a.drivable and a.installed and self._accounts.get(a.name):
+                self._panel.add(a.name)
+        await self._render_rows()
 
+    async def _render_rows(self) -> None:
+        """(Re)build the rows from cached detection — no re-probe, so checkbox toggles are
+        instant."""
         rows = self.query_one("#rows", VerticalScroll)
         await rows.remove_children()
-        in_panel = {a.name for a in self.config.roster}
         n_installed = sum(1 for a in self._agents if a.installed)
         self.query_one("#hint", Static).update(
-            f"{n_installed} installed · {len(self._agents)} known. 👤 = the account each is "
-            "signed in as. Sign out to force re-auth, then log in with the account you want.")
+            f"{n_installed} installed · [b]{len(self._panel)} in panel[/b]. ☑ = deliberates · "
+            "👤 = signed-in account. Only agents with a headless adapter can join a panel.")
         for a in self._agents:
-            await rows.mount(self._row(a, a.name in in_panel, accounts.get(a.name, "")))
+            await rows.mount(self._row(a, self._accounts.get(a.name, "")))
 
-    def _row(self, a: DetectedAgent, in_panel: bool, account: str = "") -> Horizontal:
-        tag = " · in panel" if in_panel else ""
+    def _row(self, a: DetectedAgent, account: str = "") -> Horizontal:
+        selected = a.name in self._panel
+        tag = " · in panel" if selected else ""
         if a.installed:
             who = f"   👤 {account}" if account else ""
             state = f"✓ {a.label} {a.version}{who}{tag}".rstrip()
+            if not a.drivable:  # connected but no adapter → can't deliberate (answers "why not")
+                state += "\n     no headless adapter yet — connected, but can't join a panel"
             if a.auth_note:  # e.g. Antigravity: sign in inside the app
                 state += f"\n     {a.auth_note}"
             elif not a.auth_cmd:  # key-based agent: no login command
@@ -119,6 +137,12 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
             state = f"· {a.label} — unavailable"
         buttons = []
         if a.installed:
+            if a.drivable:  # panel checkbox — only agents we can actually drive
+                buttons.append(Button("☑ In panel" if selected else "☐ Add",
+                                      id=f"panel__{a.name}",
+                                      variant="success" if selected else "default"))
+            else:
+                buttons.append(Button("⊘ no adapter", id=f"panel__{a.name}", disabled=True))
             if a.auth_cmd:
                 label = "Open app" if a.auth_gui else "Log in"
                 buttons.append(Button(label, id=f"login__{a.name}", variant="success"))
@@ -144,6 +168,14 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         action, _, name = bid.partition("__")
         agent = next((a for a in self._agents if a.name == name), None)
         if agent is None:
+            return
+        if action == "panel":  # toggle panel membership — instant, no re-detect
+            if not agent.drivable:
+                self.notify(f"{agent.label} has no headless adapter yet — it can't join a "
+                            "panel.", severity="warning", timeout=5)
+                return
+            self._panel.discard(name) if name in self._panel else self._panel.add(name)
+            await self._render_rows()
             return
         if action == "status":
             st = await ftu.account_status(agent)
@@ -185,14 +217,27 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         await self._rebuild()
 
     async def _save(self) -> None:
-        # Reconcile the roster: add any newly installed + signed-in agents.
-        with self.app.suspend():
-            print("\n── verifying agents and updating the panel ──\n")
-            updated = await ftu.auto_bootstrap(
-                Path.cwd(), existing=self.config, emit=lambda m: print(f"  {m}"))
-            input("\nDone. Press Enter to return…")
-        cfg.save(updated, self.config_path)
-        self.dismiss(updated)
+        # Build the roster straight from the checkboxes (the panel = checked drivable
+        # agents). No blocking verify handshake — readiness is "enabled", so this is instant.
+        from ..core.config import AgentConfig
+
+        existing = {a.name: a for a in self.config.roster}
+        roster = []
+        for a in self._agents:
+            if a.name in self._panel and a.drivable and a.installed:
+                ac = existing.get(a.name) or AgentConfig(name=a.name, kind=a.kind)
+                ac.enabled = True
+                roster.append(ac)
+        self.config.roster = roster
+        # Keep the judge pointing at a panel member.
+        names = {a.name for a in roster}
+        if self.config.judge.backend == "designated_agent" and roster \
+                and self.config.judge.agent not in names:
+            self.config.judge.agent = roster[0].name
+        ftu.write_brief(Path.cwd())  # ensure the dev-cycle brief is present for the agents
+        cfg.save(self.config, self.config_path)
+        self.notify(f"Panel saved — {len(roster)} agent(s) in the panel.")
+        self.dismiss(self.config)
 
     def action_close(self) -> None:
         self.dismiss(None)

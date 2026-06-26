@@ -260,7 +260,7 @@ class AgentPanelApp(App):
                 else:
                     tag = ("[green]· in panel[/]" if in_panel and drivable
                            else "[cyan]· ready — ^A to add[/]" if drivable
-                           else "[dim]· connected (not a panelist yet)[/]")
+                           else "[dim]· connected · no panel adapter yet[/]")
                     acct_part = f"   [dim]{who}[/]" if who else ""
                     row.settle(f"[green]✓[/]  [bold]{row.label_text}[/]{acct_part}   {tag}")
             return detected
