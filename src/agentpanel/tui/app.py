@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import Footer, Header, Input, Static, TabbedContent, TabPane
 
@@ -66,11 +67,14 @@ class AgentPanelApp(App):
     Collapsible { border: round $primary-darken-2; margin: 0 0 1 0; }
     #welcome { height: 1fr; content-align: center middle; padding: 1 2; }
     """
+    # priority=True so these fire even while the ask Input is focused (Ctrl-A/E/O would
+    # otherwise be consumed by the input as cursor/edit keys).
     BINDINGS = [
-        ("ctrl+n", "focus_ask", "New session"),
-        ("ctrl+e", "execute", "Execute elected"),
-        ("ctrl+o", "open_session", "Open agent's session"),
-        ("ctrl+q", "quit", "Quit"),
+        Binding("ctrl+n", "focus_ask", "New session"),
+        Binding("ctrl+a", "agent_setup", "Agent setup", priority=True),
+        Binding("ctrl+e", "execute", "Execute elected", priority=True),
+        Binding("ctrl+o", "open_session", "Open agent's session", priority=True),
+        Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
     def __init__(self, config: Optional[Config] = None, repo: Optional[Path] = None,
@@ -121,6 +125,19 @@ class AgentPanelApp(App):
 
     def action_focus_ask(self) -> None:
         self.query_one("#ask-input", Input).focus()
+
+    def action_agent_setup(self) -> None:
+        """Open agent setup (Ctrl-A): add agents, sign in/out, switch accounts."""
+        from .agent_setup import AgentSetupScreen
+
+        def _done(updated) -> None:
+            if updated is not None:
+                self.manager.config = updated
+                ready = updated.panel() or updated.enabled_agents()
+                self.sub_title = f"{len(ready)} panelists"
+                self.notify(f"Agent setup saved — {len(ready)} agents ready.")
+
+        self.push_screen(AgentSetupScreen(self.manager.config, cfg.GLOBAL_CONFIG), _done)
 
     def _active_session(self) -> Optional[Session]:
         tabs = self.query_one("#sessions", TabbedContent)

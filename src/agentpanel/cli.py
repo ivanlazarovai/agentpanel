@@ -46,7 +46,9 @@ def main(argv: List[str] | None = None) -> int:
     sess.add_argument("--repo", default=".", help="repository (default: cwd)")
     acc = sub.add_parser("account",
                          help="switch an agent's account, or clone it to run multiple accounts")
-    acc.add_argument("action", choices=["list", "set", "clear", "clone"])
+    acc.add_argument("action",
+                     choices=["list", "set", "clear", "clone",
+                              "login", "logout", "relogin", "status"])
     acc.add_argument("agent", nargs="?", help="roster agent name")
     acc.add_argument("rest", nargs="*",
                      help="credentials as KEY=VALUE or a bare API key; for `clone`, the first "
@@ -83,6 +85,8 @@ def main(argv: List[str] | None = None) -> int:
     if args.command == "sessions":
         return _sessions(args.repo)
     if args.command == "account":
+        if args.action in ("login", "logout", "relogin", "status"):
+            return asyncio.run(_account_auth(args.action, args.agent))
         return _account(args.action, args.agent, args.rest, args.label)
     if args.command == "ask":
         return asyncio.run(_ask(args.question, args.repo, args.mock, args.no_worktrees,
@@ -185,6 +189,25 @@ def _parse_creds(items: List[str], kind: str) -> dict:
         elif default_var:
             env[default_var] = item
     return env
+
+
+async def _account_auth(action: str, agent: Optional[str]) -> int:
+    """Run an agent's native auth command (login / logout / relogin / status)."""
+    from .core import ftu
+
+    if not agent:
+        print(f"which agent? e.g. `agentpanel account {action} cursor`")
+        return 1
+    detected = next((a for a in await ftu.detect() if a.name == agent), None)
+    if detected is None or not detected.installed:
+        print(f"agent '{agent}' is not installed/known. Try `agentpanel doctor`.")
+        return 1
+    op = {"login": ftu.login, "logout": ftu.logout, "relogin": ftu.relogin, "status": ftu.status}
+    res = await op[action](detected)
+    print(f"{action} {agent}: {'ok' if res.ok else res.output}")
+    if action in ("login", "relogin"):
+        print("(sign in with the account you want; AgentPanel will use it next run)")
+    return 0 if res.ok else 1
 
 
 def _account(action: str, agent: Optional[str], rest: List[str], label: Optional[str]) -> int:

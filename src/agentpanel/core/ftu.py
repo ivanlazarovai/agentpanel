@@ -46,6 +46,8 @@ class DetectedAgent:
     version: str = ""
     install_cmd: str = ""
     auth_cmd: str = ""
+    auth_logout_cmd: str = ""
+    auth_status_cmd: str = ""
     docs: str = ""
     health: Optional[HealthStatus] = None
 
@@ -69,24 +71,20 @@ async def detect() -> List[DetectedAgent]:
         probe = str(entry.get("probe") or "")
         install_cmd = str(entry.get("install") or "")
         auth_cmd = str(entry.get("auth") or "")
+        logout_cmd = str(entry.get("auth_logout") or "")
+        status_cmd = str(entry.get("auth_status") or "")
         docs = str(entry.get("docs") or "")
+        common = dict(name=name, kind=kind, label=label, install_cmd=install_cmd,
+                      auth_cmd=auth_cmd, auth_logout_cmd=logout_cmd, auth_status_cmd=status_cmd,
+                      docs=docs)
         if drivable:
             health = await build(AgentConfig(name=name, kind=kind)).health()
-            out.append(
-                DetectedAgent(
-                    name=name, kind=kind, label=label, installed=health.installed,
-                    drivable=True, binary=health.binary, version=health.version,
-                    install_cmd=install_cmd, auth_cmd=auth_cmd, docs=docs, health=health,
-                )
-            )
+            out.append(DetectedAgent(installed=health.installed, drivable=True,
+                                     binary=health.binary, version=health.version,
+                                     health=health, **common))
         else:
             path = shutil.which(probe) if probe else None
-            out.append(
-                DetectedAgent(
-                    name=name, kind=kind, label=label, installed=bool(path), drivable=False,
-                    binary=path, install_cmd=install_cmd, auth_cmd=auth_cmd, docs=docs,
-                )
-            )
+            out.append(DetectedAgent(installed=bool(path), drivable=False, binary=path, **common))
     return out
 
 
@@ -100,22 +98,38 @@ def needs_login(text: str) -> bool:
     return any(h in low for h in _AUTH_HINTS)
 
 
-async def login(agent: DetectedAgent) -> InstallResult:
-    """Launch the agent's native login, attached to the terminal so its browser/device-code
-    flow works. AgentPanel can't complete the login for you, but it runs it so you never
-    leave the panel. In a TUI, call this inside ``app.suspend()``.
-    """
-    cmd = agent.auth_cmd
+async def run_interactive(cmd: str) -> InstallResult:
+    """Run an interactive auth command attached to the terminal (so browser/device-code
+    flows and prompts work). In a TUI, call this inside ``app.suspend()``."""
     if not cmd:
-        return InstallResult(ok=False, command="", output="no login command for this agent")
+        return InstallResult(ok=False, command="", output="no command for this agent")
     try:
-        # Inherit stdio (no PIPE) so interactive prompts / browser handoff work.
-        proc = await asyncio.create_subprocess_shell(cmd)
+        proc = await asyncio.create_subprocess_shell(cmd)  # inherits stdio
         rc = await proc.wait()
-        return InstallResult(ok=rc == 0, command=cmd,
-                             output="logged in" if rc == 0 else f"login exited {rc}")
+        return InstallResult(ok=rc == 0, command=cmd, output="ok" if rc == 0 else f"exited {rc}")
     except Exception as exc:  # pragma: no cover - shell failure
         return InstallResult(ok=False, command=cmd, output=str(exc))
+
+
+async def login(agent: DetectedAgent) -> InstallResult:
+    """Launch the agent's native login (sign in with the account you want)."""
+    return await run_interactive(agent.auth_cmd)
+
+
+async def logout(agent: DetectedAgent) -> InstallResult:
+    """Sign the agent out, clearing its stored auth — so a re-login picks a new account."""
+    return await run_interactive(agent.auth_logout_cmd)
+
+
+async def relogin(agent: DetectedAgent) -> InstallResult:
+    """Sign out then sign in — the clean way to switch a browser-login account."""
+    await run_interactive(agent.auth_logout_cmd)
+    return await run_interactive(agent.auth_cmd)
+
+
+async def status(agent: DetectedAgent) -> InstallResult:
+    """Show the agent's auth status (which account it's signed in as)."""
+    return await run_interactive(agent.auth_status_cmd)
 
 
 # ---------------------------------------------------------------------------

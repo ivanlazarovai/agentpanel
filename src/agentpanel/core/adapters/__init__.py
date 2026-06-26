@@ -32,6 +32,9 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "probe": "claude",
         "adapter": True,
         "install": "npm install -g @anthropic-ai/claude-code",
+        "auth": "claude auth login",
+        "auth_logout": "claude auth logout",
+        "auth_status": "claude auth status",
         "docs": "https://docs.claude.com/en/docs/claude-code",
     },
     {
@@ -42,6 +45,8 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "adapter": True,
         "install": "curl https://cursor.com/install -fsS | bash",
         "auth": "cursor-agent login",  # interactive (browser); AgentPanel launches it for you
+        "auth_logout": "cursor-agent logout",
+        "auth_status": "cursor-agent status",
         "docs": "https://docs.cursor.com/en/cli/overview",
     },
     {
@@ -52,6 +57,7 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "adapter": False,
         "install": "npm install -g @openai/codex",
         "auth": "codex login",  # ChatGPT/device-code login
+        "auth_logout": "codex logout",
         "docs": "https://developers.openai.com/codex/cli",
     },
     {
