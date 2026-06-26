@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -261,7 +262,12 @@ class CliAdapter(AgentAdapter):
                 try:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
-                    # Non-JSON (text output-format or a stray log line): treat as token.
+                    # Non-JSON line: a provider error (usage limit / auth / rate limit) often
+                    # arrives as plain text — surface it clearly instead of as plan tokens.
+                    err = _cli_error_message(line)
+                    if err:
+                        yield AdapterEvent.error(f"{self.name}: {err}")
+                        continue
                     collected.append(line)
                     yield AdapterEvent.token(line + "\n")
                     continue
@@ -291,7 +297,9 @@ class CliAdapter(AgentAdapter):
         rc = await proc.wait()
         if rc != 0:
             err = (await proc.stderr.read()).decode(errors="replace") if proc.stderr else ""
-            yield AdapterEvent.error(f"{self.name}: exit {rc}: {err.strip()[:500]}")
+            blob = (err + "\n" + "".join(collected)).strip()
+            msg = _cli_error_message(blob) or f"exit {rc}: {blob[:300]}"
+            yield AdapterEvent.error(f"{self.name}: {msg}")
             return
         yield AdapterEvent.done("".join(collected), session_ref)
 
@@ -306,6 +314,28 @@ async def _drain(proc: asyncio.subprocess.Process) -> None:
             proc.kill()
         except ProcessLookupError:
             pass
+
+
+# Common provider/account errors agents emit as plain-text lines. Recognized so the panel
+# can show an actionable reason (and proceed without that agent) instead of silent garbage.
+_CLI_ERRORS = [
+    (re.compile(r"usage limit|ActionRequiredError|quota|out of credits|insufficient", re.I),
+     "usage/quota limit reached — upgrade the agent's plan or wait for reset"),
+    (re.compile(r"authenticat|not logged in|log ?in required|sign ?in|api[ -]?key|unauthorized",
+                re.I), "not authenticated — run `agentpanel add <agent>` to log in"),
+    (re.compile(r"rate limit|too many requests|429", re.I), "rate limited — try again shortly"),
+    (re.compile(r"trust", re.I), "workspace trust required"),
+]
+
+
+def _cli_error_message(line: str) -> Optional[str]:
+    """Return a clean, actionable message if a non-JSON line looks like a provider error."""
+    for pat, msg in _CLI_ERRORS:
+        if pat.search(line):
+            return f"{msg}  ({line.strip()[:120]})"
+    if line.strip().lower().startswith(("error", "fatal", "exception")):
+        return line.strip()[:200]
+    return None
 
 
 def _critique_prompt(question: str, peers: str) -> str:

@@ -106,6 +106,18 @@ async def test_claude_adapter_aclose_is_safe_without_a_live_session():
     await adapter.aclose()  # idempotent
 
 
+def test_cli_error_detection():
+    from agentpanel.core.adapter import _cli_error_message
+
+    assert "usage/quota" in _cli_error_message(
+        "ActionRequiredError: You've hit your usage limit. Get Cursor Pro...")
+    assert "not authenticated" in _cli_error_message("Error: Authentication required. Run login.")
+    assert "rate limited" in _cli_error_message("429 Too Many Requests")
+    # normal plan output is not mistaken for an error
+    assert _cli_error_message("APPROACH: use a state machine") is None
+    assert _cli_error_message("hello world") is None
+
+
 def test_round_robin_assignment():
     from agentpanel.core.deliberation import _round_robin
 
