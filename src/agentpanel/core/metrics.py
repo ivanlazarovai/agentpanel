@@ -39,6 +39,8 @@ RECORDED_KINDS = {
     EventKind.EXECUTION_DONE,
     EventKind.DIFF_READY,
     EventKind.JUDGE,
+    EventKind.PERMISSION_REQUEST,
+    EventKind.PERMISSION_DECISION,
 }
 
 # Free-text fields trimmed so the log stays a metrics log, not a transcript.

@@ -44,6 +44,10 @@ class Session:
     engine: Optional[DeliberationEngine] = None
     outcome: Optional[SessionOutcome] = None
     status: str = "pending"  # pending | running | converged | escalated | error
+    # Interactive permission channel: async (request) -> {"behavior": ...}. When set, an
+    # executing agent's gated requests are surfaced to it live (TUI modal / stdin prompt).
+    approval_resolver: Optional[object] = None
+    _gate_sock: Optional[str] = None
     _task: Optional[asyncio.Task] = None
 
     async def prepare(self) -> None:
@@ -129,9 +133,20 @@ class Session:
             self.bus.publish(EventKind.DECISION, agent=name, decision="monitor",
                              reason="not selected — now observing and coaching the worker(s)")
 
+        # Live permission channel: stand up the broker so gated requests reach the user.
+        broker = await self._start_broker()
         feedback: Dict[str, str] = {w: "" for w in workers}
         results: Dict[str, str] = {}
 
+        try:
+            return await self._run_rounds(workers, observers, review_rounds, feedback, results)
+        finally:
+            if broker is not None:
+                await broker.stop()
+                self._gate_sock = None
+
+    async def _run_rounds(self, workers, observers, review_rounds, feedback, results):
+        by_name = {p.name: p for p in self.panelists}
         for rnd in range(review_rounds + 1):
             # 1) Each worker runs this round (resuming its own session across rounds).
             for name in workers:
@@ -235,9 +250,36 @@ class Session:
             "AGENTPANEL_METRICS": str(repo_metrics_path(self.repo)),
             "AGENTPANEL_MAX_AUTO_RISK": max_auto,
         }
+        if self._gate_sock:  # live interactive approvals reach the panel through this socket
+            env["AGENTPANEL_APPROVE_SOCK"] = self._gate_sock
         if os.environ.get("PATH"):
             env["PATH"] = os.environ["PATH"]  # so the agent can find gh/git/etc.
         return env
+
+    async def _start_broker(self):
+        """Stand up the approval broker if an interactive resolver is attached."""
+        if self.approval_resolver is None or self.repo is None:
+            return None
+        from .approval_broker import ApprovalBroker, socket_path_for
+
+        sock = socket_path_for(self.id)
+        broker = ApprovalBroker(self._broker_resolve, sock)
+        await broker.start()
+        self._gate_sock = sock
+        return broker
+
+    async def _broker_resolve(self, req: Dict) -> Dict:
+        """Surface a gated request to the user (via the resolver) and relay the decision."""
+        self.bus.publish(EventKind.PERMISSION_REQUEST,
+                         **{k: req.get(k) for k in ("tool", "target", "action", "risk", "reason")})
+        try:
+            decision = await self.approval_resolver(req)  # type: ignore[misc]
+        except Exception:
+            decision = {"behavior": "deny", "reason": "resolver error"}
+        self.bus.publish(EventKind.PERMISSION_DECISION, tool=req.get("tool"),
+                         behavior=decision.get("behavior"), risk=req.get("risk"),
+                         remembered=decision.get("remembered", False))
+        return decision
 
     def _plan_text(self, name: str) -> str:
         """The agreed plan (converged), else this agent's own plan."""

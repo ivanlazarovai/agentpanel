@@ -61,12 +61,14 @@ class AgentPanelApp(App):
     .turn-body { padding: 0 1; height: auto; }
     .open-cmd { color: $text-muted; padding: 0 1; height: auto; }
     .observation { color: $warning; padding: 0 1; height: auto; }
+    .diffstat { color: $success; padding: 0 1; height: auto; }
     .escalation { background: $warning-darken-2; color: $text; padding: 1; margin: 1 0; }
     Collapsible { border: round $primary-darken-2; margin: 0 0 1 0; }
     #welcome { height: 1fr; content-align: center middle; padding: 1 2; }
     """
     BINDINGS = [
         ("ctrl+n", "focus_ask", "New session"),
+        ("ctrl+e", "execute", "Execute elected"),
         ("ctrl+o", "open_session", "Open agent's session"),
         ("ctrl+q", "quit", "Quit"),
     ]
@@ -95,6 +97,68 @@ class AgentPanelApp(App):
 
     def action_focus_ask(self) -> None:
         self.query_one("#ask-input", Input).focus()
+
+    def _active_session(self) -> Optional[Session]:
+        tabs = self.query_one("#sessions", TabbedContent)
+        if not tabs.display or not tabs.active:
+            return None
+        return self.manager.get(str(tabs.active).removeprefix("pane-"))
+
+    def action_execute(self) -> None:
+        """Run the active session's elected agent (Ctrl-E). Gated commands prompt live."""
+        session = self._active_session()
+        if session is None or session.outcome is None:
+            self.notify("Convene and converge a session first.", severity="warning")
+            return
+        if session.worktrees is None:
+            self.notify("Execution needs a git repo (run AgentPanel inside one).",
+                        severity="warning")
+            return
+        self.run_worker(self._execute(session), exclusive=False)
+
+    async def _execute(self, session: Session) -> None:
+        out = session.outcome
+        if out.status == "converged" and out.elected:
+            agents = [out.elected]
+        elif out.status == "escalated" and out.options:
+            agents = [out.options[0]["representative"]]
+        else:
+            agents = []
+        if not agents:
+            self.notify("Nothing to execute.")
+            return
+        self.notify(f"Executing {', '.join(agents)} — you'll be asked to approve gated commands.")
+        try:
+            await session.execute(agents, review_rounds=0)
+            self.notify(f"{', '.join(agents)} finished — see the diff in its card.")
+        except Exception as exc:  # pragma: no cover
+            self.notify(f"execution error: {exc}", severity="error")
+
+    async def _approve(self, req: dict) -> dict:
+        """Interactive permission resolver: show the modal, relay the user's choice."""
+        from .approval_modal import ApprovalModal
+
+        choice = await self.push_screen_wait(ApprovalModal(req))
+        if choice == "deny":
+            return {"behavior": "deny", "remembered": False}
+        remembered = self._remember(req) if choice == "allow_type" else False
+        return {"behavior": "allow", "remembered": remembered}
+
+    def _remember(self, req: dict) -> bool:
+        """Add a remembered allow-rule for this category (never for critical)."""
+        from ..core import config as cfg
+        from ..core.permissions import PermissionPolicy, RiskLevel
+
+        config = cfg.load()
+        policy = PermissionPolicy.from_dict(config.permissions)
+        risk = getattr(RiskLevel, str(req.get("risk", "medium")).upper(), RiskLevel.MEDIUM)
+        try:
+            policy.remember(str(req.get("action", "run_shell")), "allow", max_risk=risk)
+        except ValueError:
+            return False  # critical can never be auto-allowed
+        config.permissions = policy.to_dict()
+        cfg.save(config)
+        return True
 
     def action_open_session(self) -> None:
         """Open the active session's agent in its OWN native CLI session — interactively —
@@ -139,10 +203,16 @@ class AgentPanelApp(App):
         except Exception:
             pass
 
+    def _is_git_repo(self) -> bool:
+        p = self.repo.resolve()
+        return any((d / ".git").exists() for d in [p, *p.parents])
+
     async def start_session(self, question: str) -> None:
         """Create + prepare a session, add its tab, then run it in the background."""
         self._reveal_panel()
-        session = self.manager.create(question, repo=self.repo, use_worktrees=False)
+        # Worktrees (and thus execution) need a git repo; deliberation works without one.
+        session = self.manager.create(question, repo=self.repo, use_worktrees=self._is_git_repo())
+        session.approval_resolver = self._approve  # live permission channel for execution
         await session.prepare()
         agents = [p.name for p in session.panelists]
         view = SessionView(agents, id=f"view-{session.id}")

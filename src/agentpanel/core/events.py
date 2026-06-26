@@ -37,6 +37,8 @@ class EventKind(str, enum.Enum):
     AGENT_SESSION = "agent_session"  # data: {agent, session_ref, open_command}
     DECISION = "decision"  # data: {agent, decision: proceed|stand_down|monitor|candidate, reason}
     OBSERVATION = "observation"  # data: {observer, target, round, text}  (coopetition feedback)
+    PERMISSION_REQUEST = "permission_request"  # data: {tool, target, action, risk, reason}
+    PERMISSION_DECISION = "permission_decision"  # data: {tool, behavior, risk, remembered?}
 
     # Per-panelist streaming (one agent's live output)
     PANELIST_STARTED = "panelist_started"  # data: {agent, mode, turn}

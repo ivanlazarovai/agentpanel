@@ -158,6 +158,17 @@ class SessionView(VerticalScroll):
         if card is not None:
             card.set_decision(d["decision"])
 
+    async def _on_diff_ready(self, d) -> None:
+        card = self._cards.get(d["agent"])
+        if card is not None:
+            stat = d.get("diffstat") or "(no changes)"
+            await card.mount(Static(f"📦 executed → {d['branch']}\n{stat}", classes="diffstat"))
+
+    async def _on_permission_decision(self, d) -> None:
+        icon = "✓" if d.get("behavior") == "allow" else "✗"
+        note = " (remembered)" if d.get("remembered") else ""
+        self._set_bar(f"{self.bar_text}   ·   {icon} {d.get('tool')} {d.get('behavior')}{note}")
+
     async def _on_observation(self, d) -> None:
         # Coopetition feedback from an observing teammate, shown under the worker's card.
         card = self._cards.get(d["target"])

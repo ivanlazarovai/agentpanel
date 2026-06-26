@@ -52,8 +52,23 @@ def _decide(arguments: Dict[str, Any]) -> Dict[str, Any]:
     req = map_tool_request("worker", tool_name, tool_input)
 
     policy = PermissionPolicy.from_dict(cfg.load().permissions)
-    ceiling = _risk_from_env(RiskLevel)
-    behavior, decision = headless_resolve(policy, req, max_auto_risk=ceiling)
+    decision = policy.decide(req)
+    if decision.outcome == "allow":
+        behavior = "allow"
+    elif decision.outcome == "deny":
+        behavior = "deny"
+    else:
+        # 'ask' — give the live panel first refusal (the user decides), else fall back to
+        # the headless policy ceiling.
+        live = _ask_broker({
+            "tool": tool_name, "target": req.target, "action": req.action,
+            "risk": decision.risk.label, "reason": decision.reason,
+        })
+        if live and live.get("behavior") in ("allow", "deny"):
+            behavior = live["behavior"]
+        else:
+            ceiling = _risk_from_env(RiskLevel)
+            behavior, _ = headless_resolve(policy, req, max_auto_risk=ceiling)
     _log(tool_name, req.target, decision, behavior)
 
     if behavior == "allow":
@@ -63,6 +78,30 @@ def _decide(arguments: Dict[str, Any]) -> Dict[str, Any]:
         "message": f"AgentPanel denied {tool_name} ({decision.risk.label} risk): "
                    f"{decision.reason}. Adjust the policy or run it yourself.",
     }
+
+
+def _ask_broker(payload: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Forward a request to the live panel's approval broker; None if unreachable."""
+    sock = os.environ.get("AGENTPANEL_APPROVE_SOCK")
+    if not sock:
+        return None
+    import socket
+
+    try:
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.settimeout(600)
+        c.connect(sock)
+        c.sendall((json.dumps(payload) + "\n").encode())
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = c.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        c.close()
+        return json.loads(buf.decode()) if buf.strip() else None
+    except Exception:
+        return None
 
 
 def _risk_from_env(RiskLevel) -> Any:

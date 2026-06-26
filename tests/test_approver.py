@@ -47,6 +47,45 @@ def test_headless_resolve_allows_safe_denies_dangerous(tmp_path):
     assert b == "deny"
 
 
+async def test_approval_broker_round_trip():
+    import asyncio
+    import os
+
+    from agentpanel.core.approval_broker import ApprovalBroker
+
+    async def resolver(req):
+        return {"behavior": "allow" if req.get("tool") == "Bash" else "deny", "remembered": True}
+
+    sock = f"/tmp/ap-test-{os.getpid()}.sock"
+    broker = ApprovalBroker(resolver, sock)
+    await broker.start()
+    try:
+        reader, writer = await asyncio.open_unix_connection(sock)
+        writer.write(b'{"tool":"Bash","target":"gh issue list"}\n')
+        await writer.drain()
+        resp = json.loads((await reader.readline()).decode())
+        assert resp["behavior"] == "allow" and resp["remembered"] is True
+        writer.close()
+    finally:
+        await broker.stop()
+    assert not os.path.exists(sock)  # cleaned up
+
+
+def test_allow_this_type_remembers_a_rule(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTPANEL_HOME", str(tmp_path))
+    from agentpanel.core import config as cfg
+    from agentpanel.core.config import Config
+    from agentpanel.tui.app import AgentPanelApp
+
+    cfg.save(Config(permissions={"granted_dirs": [], "rules": [], "default": "ask"}))
+    app = AgentPanelApp(config=Config())
+    assert app._remember({"action": "run_shell", "risk": "medium"}) is True
+    assert app._remember({"action": "run_shell", "risk": "critical"}) is False  # never
+    saved = cfg.load()
+    assert any(r["action"] == "run_shell" and r["outcome"] == "allow"
+               for r in saved.permissions["rules"])
+
+
 def test_mcp_tools_call_returns_claude_permission_shape(tmp_path, monkeypatch):
     # Point config at a temp home with a policy granting tmp_path.
     monkeypatch.setenv("AGENTPANEL_HOME", str(tmp_path / "home"))
