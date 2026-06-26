@@ -38,6 +38,10 @@ def main(argv: List[str] | None = None) -> int:
     boot.add_argument("--dir", default=".", help="base directory to operate in (default: cwd)")
     boot.add_argument("--no-install", action="store_true", help="don't install missing agents")
     boot.add_argument("--no-login", action="store_true", help="don't launch agent logins")
+    add = sub.add_parser("add", help="quickly add agent(s): install + log in + verify, then keep")
+    add.add_argument("names", nargs="*",
+                     help="agent names to add (e.g. cursor codex); empty = any available")
+    add.add_argument("--dir", default=".", help="base directory (default: cwd)")
     parser.add_argument("--mock", action="store_true",
                         help="launch the TUI with a built-in mock panel (no real agents)")
     ask = sub.add_parser("ask", help="run one headless panel session")
@@ -64,6 +68,8 @@ def main(argv: List[str] | None = None) -> int:
         return _setup()
     if args.command == "bootstrap":
         return asyncio.run(_bootstrap(args.dir, not args.no_install, not args.no_login))
+    if args.command == "add":
+        return asyncio.run(_add(args.names, args.dir))
     if args.command == "ask":
         return asyncio.run(_ask(args.question, args.repo, args.mock, args.no_worktrees,
                                 args.execute, args.keep, args.review))
@@ -143,6 +149,21 @@ async def _doctor() -> int:
 # ---------------------------------------------------------------------------
 # Stubs for commands implemented in later build steps
 # ---------------------------------------------------------------------------
+
+
+async def _add(names: List[str], directory: str) -> int:
+    from .core import ftu
+
+    repo = Path(directory).resolve()
+    config = cfg.load() if cfg.config_exists() else None
+    label = ", ".join(names) if names else "any available agents"
+    print(f"Adding {label} …\n")
+    config = await ftu.auto_bootstrap(repo, existing=config, only=(names or None),
+                                      emit=lambda m: print(f"  {m}"))
+    cfg.save(config)
+    panel = [a.name for a in config.panel()]
+    print(f"\nPanel now: {', '.join(panel) or '(none ready)'}.")
+    return 0
 
 
 async def _bootstrap(directory: str, do_install: bool, do_login: bool) -> int:

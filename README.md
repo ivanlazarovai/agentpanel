@@ -59,6 +59,7 @@ join a panel — exactly what the FTU verification handshake checks for.)
 ln -s "$(pwd)/agentpanel" /usr/local/bin/agentpanel
 
 ./agentpanel bootstrap             # explicit cold start: install + log in + verify, then configure
+./agentpanel add cursor codex      # quickly add specific agents (install + log in + verify); empty = any
 ./agentpanel doctor                # which agents are installed / installable
 ./agentpanel --mock                # launch the TUI with a built-in mock panel
 ./agentpanel ask --mock "Design the session persistence layer"          # headless

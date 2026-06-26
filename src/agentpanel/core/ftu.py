@@ -17,7 +17,7 @@ import asyncio
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 try:  # packaged data access
     from importlib.resources import files as _res_files
@@ -326,33 +326,36 @@ async def auto_bootstrap(
     repo: Path,
     *,
     existing: Optional[Config] = None,
+    only: Optional[List[str]] = None,
     do_install: bool = True,
     do_login: bool = True,
     emit=lambda _msg: None,
 ) -> Config:
-    """Bring AgentPanel up to a working multi-agent state — from zero, or topping up a thin
-    panel.
+    """Bring AgentPanel up to a working multi-agent state — from zero, topping up a thin
+    panel, or adding specific agents (``only=[names]``).
 
-    For each drivable agent: reuse it untouched if it's already verified in ``existing``
-    (no cost), else install it if missing, run its native login if the verification
-    handshake says it's not authed, and verify it. Then assemble a ready-to-save
-    :class:`Config`, preserving ``existing`` judge/settings/permissions and granting the
-    base directory. Install/login are interactive (they attach to the terminal), so this
-    runs from a real terminal or a suspended TUI.
+    For each drivable agent in scope: reuse it untouched if already verified in
+    ``existing`` (no cost), else install it if missing, run its native login if the
+    verification handshake says it's not authed, and verify it. Agents out of scope are
+    preserved from ``existing``. Then assemble a ready-to-save :class:`Config`, preserving
+    ``existing`` judge/settings/permissions and granting the base directory.
     """
     repo = Path(repo).resolve()
     write_brief(repo, ["AGENTS.md"])
 
-    prior = {a.name: a for a in (existing.roster if existing else []) if a.verified}
-    roster: List[AgentConfig] = []
-    verified: List[str] = []
+    existing_by_name = {a.name: a for a in (existing.roster if existing else [])}
+    prior = {n: a for n, a in existing_by_name.items() if a.verified}
+    result: Dict[str, AgentConfig] = dict(existing_by_name)  # preserve everything by default
+    verified: List[str] = [n for n, a in prior.items() if a.enabled]
 
     for agent in [a for a in await detect() if a.drivable]:
-        # Already configured + verified? Keep it as-is — don't re-verify (saves cost).
-        if agent.name in prior:
-            roster.append(prior[agent.name])
-            verified.append(agent.name)
-            emit(f"{agent.label}: ✓ already configured")
+        in_scope = (agent.name in only) if only is not None else True
+        # Out of scope, or already verified (and not explicitly targeted) → leave as-is.
+        if not in_scope or (agent.name in prior and not (only and agent.name in only)):
+            if agent.name in prior and agent.name not in verified:
+                verified.append(agent.name)
+            if agent.name in prior:
+                emit(f"{agent.label}: ✓ already configured")
             continue
 
         if not agent.installed and do_install and agent.installable:
@@ -370,9 +373,9 @@ async def auto_bootstrap(
             await login(agent)
             vr = await verify(AgentConfig(name=agent.name, kind=agent.kind), repo)
 
-        roster.append(AgentConfig(name=agent.name, kind=agent.kind,
-                                  enabled=vr.ok, verified=vr.ok))
-        if vr.ok:
+        result[agent.name] = AgentConfig(name=agent.name, kind=agent.kind,
+                                         enabled=vr.ok, verified=vr.ok)
+        if vr.ok and agent.name not in verified:
             verified.append(agent.name)
         emit(f"{agent.label}: {'✓ ready' if vr.ok else '· ' + vr.detail}")
 
@@ -383,7 +386,7 @@ async def auto_bootstrap(
     if str(repo) not in granted:
         granted.append(str(repo))
     config = Config(
-        roster=roster,
+        roster=list(result.values()),
         judge=judge,
         settings=settings,
         repo=str(repo),
