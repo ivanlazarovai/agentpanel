@@ -62,19 +62,16 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "docs": "https://developers.openai.com/codex/cli",
     },
     {
-        "name": "gemini",
-        "kind": "gemini",
-        "label": "Gemini CLI",
-        "probe": "gemini",
+        "name": "antigravity",
+        "kind": "antigravity",
+        "label": "Google Antigravity",
+        "probe": "antigravity",  # CLI launcher, if/when one lands on PATH
+        "app": "/Applications/Antigravity.app",  # it's a desktop agent IDE, not on PATH
         "adapter": False,
-        "install": "npm install -g @google/gemini-cli",
-        # Browser OAuth ("Login with Google") is no longer supported for *individual*
-        # Gemini Code Assist accounts — Google now routes individuals to the Antigravity
-        # suite (https://antigravity.google). The CLI still works with a Google AI Studio
-        # API key, so we auth key-based (GEMINI_API_KEY) rather than offer a dead login.
-        "auth_note": "Gemini individual browser login is deprecated (→ Antigravity). Use a "
-                     "Google AI Studio key: `agentpanel account set gemini <GEMINI_API_KEY>`",
-        "docs": "https://github.com/google-gemini/gemini-cli",
+        "install": "open https://antigravity.google",  # download (no headless CLI yet)
+        "auth": "open -a Antigravity",  # sign in with Google inside the app
+        "auth_note": "Sign in with your Google account inside the Antigravity app",
+        "docs": "https://antigravity.google",
     },
     {
         "name": "aider",

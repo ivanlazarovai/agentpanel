@@ -1,6 +1,6 @@
 """Agent setup (Ctrl-A) — add agents and manage their accounts in one place.
 
-For each known agent: install it if missing (codex, gemini, …), and — for installed ones —
+For each known agent: install it if missing (codex, antigravity, …), and — for installed ones —
 log in, sign out (force re-auth so you can pick a different account), re-login (sign out +
 in), or check status. Interactive commands run under ``app.suspend()`` so each CLI's
 browser/device-code flow owns the terminal, then control returns to the panel.
@@ -108,12 +108,11 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         if a.installed:
             who = f"   👤 {account}" if account else ""
             state = f"✓ {a.label} {a.version}{who}{tag}".rstrip()
-            if not a.auth_cmd:  # key-based agent (e.g. Gemini): no login command
-                if a.auth_note:
-                    state += f"\n     {a.auth_note}"
-                else:
-                    var = ftu.KIND_KEYVAR.get(a.kind, "API key")
-                    state += f"\n     auth via {var} — `agentpanel account set {a.name} <KEY>`"
+            if a.auth_note:  # e.g. Antigravity: sign in inside the app
+                state += f"\n     {a.auth_note}"
+            elif not a.auth_cmd:  # key-based agent: no login command
+                var = ftu.KIND_KEYVAR.get(a.kind, "API key")
+                state += f"\n     auth via {var} — `agentpanel account set {a.name} <KEY>`"
         elif a.installable:
             state = f"· {a.label} — not installed"
         else:
@@ -127,7 +126,7 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
             if a.auth_cmd and a.auth_logout_cmd:
                 buttons.append(Button("Re-login", id=f"relogin__{a.name}", variant="primary"))
             # Status reads account/plan/renewal from each CLI or its stored creds — works
-            # even for agents (codex, gemini) that have no `status` subcommand.
+            # even for agents (codex, antigravity) that have no `status` subcommand.
             buttons.append(Button("Status", id=f"status__{a.name}"))
         elif a.installable:
             buttons.append(Button("Install", id=f"install__{a.name}", variant="primary"))

@@ -174,7 +174,6 @@ _KIND_KEYVAR = {
     "claude_code": "ANTHROPIC_API_KEY",
     "cursor_agent": "CURSOR_API_KEY",
     "codex": "OPENAI_API_KEY",
-    "gemini": "GEMINI_API_KEY",
 }
 
 

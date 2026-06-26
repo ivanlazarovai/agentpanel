@@ -85,7 +85,10 @@ async def _probe(entry: Dict[str, object]) -> DetectedAgent:
         return DetectedAgent(installed=health.installed, drivable=True, binary=health.binary,
                              version=health.version, health=health, **common)
     path = shutil.which(str(entry.get("probe") or "")) if entry.get("probe") else None
-    return DetectedAgent(installed=bool(path), drivable=False, binary=path, **common)
+    app = os.path.expanduser(str(entry.get("app") or ""))
+    has_app = bool(app) and os.path.exists(app)
+    return DetectedAgent(installed=bool(path) or has_app, drivable=False,
+                         binary=path or (app if has_app else None), **common)
 
 
 async def detect() -> List[DetectedAgent]:
@@ -143,7 +146,6 @@ KIND_KEYVAR = {
     "claude_code": "ANTHROPIC_API_KEY",
     "cursor_agent": "CURSOR_API_KEY",
     "codex": "OPENAI_API_KEY",
-    "gemini": "GEMINI_API_KEY",
 }
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -173,7 +175,7 @@ USAGE_HINT = {
     "claude_code": "limits/usage not in CLI — run `claude` then `/usage`",
     "cursor_agent": "limits/usage not in CLI — see cursor.com/dashboard",
     "codex": "limits/usage not in CLI — see chatgpt.com settings",
-    "gemini": "limits/usage not in CLI — see Google AI Studio quota",
+    "antigravity": "limits/usage shown inside the Antigravity app",
 }
 
 
@@ -241,13 +243,14 @@ def _read_json(path: str) -> dict:
         return {}
 
 
-def _gemini_account() -> str:
-    """Gemini stores its signed-in Google account locally (no status command)."""
+def _antigravity_account() -> str:
+    """Antigravity (Google's agent IDE) records its signed-in Google account locally; when
+    signed out it keeps the last account under ``old`` — surface that, flagged."""
     d = _read_json("~/.gemini/google_accounts.json")
-    if d.get("active") or d.get("email"):
-        return d.get("active") or d.get("email")
-    claims = _jwt_claims(_read_json("~/.gemini/oauth_creds.json").get("id_token", ""))
-    return claims.get("email", "")
+    if d.get("active"):
+        return str(d["active"])
+    old = d.get("old") or []
+    return f"{old[-1]} (signed out)" if old else ""
 
 
 async def account_status(agent: DetectedAgent, timeout: float = 20.0) -> AccountStatus:
@@ -297,8 +300,8 @@ async def account_status(agent: DetectedAgent, timeout: float = 20.0) -> Account
             st.renews = f"renews {str(until)[:10]}"
         if creds.get("auth_mode"):
             st.detail = f"auth_mode: {creds['auth_mode']}"
-    elif kind == "gemini":
-        st.account = _gemini_account()
+    elif kind == "antigravity":
+        st.account = _antigravity_account()
     if not st.account:
         var = KIND_KEYVAR.get(kind)
         if var and os.environ.get(var):

@@ -77,10 +77,9 @@ def test_recommend_judge_prefers_chair_then_deterministic():
 async def test_detect_carries_auth_command():
     by_name = {a.name: a for a in await ftu.detect()}
     assert by_name["cursor"].auth_cmd == "cursor-agent login"
-    # Gemini browser OAuth is deprecated for individuals (→ Antigravity): no login command,
-    # an auth_note pointing at the API-key path instead.
-    gem = by_name["gemini"]
-    assert gem.auth_cmd == "" and "Antigravity" in gem.auth_note
+    # Antigravity is a desktop agent IDE: signed into via the app, with an auth_note.
+    ag = by_name["antigravity"]
+    assert ag.kind == "antigravity" and "Antigravity app" in ag.auth_note
 
 
 @pytest.mark.asyncio
