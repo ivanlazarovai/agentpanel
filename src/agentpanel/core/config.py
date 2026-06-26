@@ -112,6 +112,9 @@ class Config:
     judge: JudgeConfig = field(default_factory=JudgeConfig)
     settings: Settings = field(default_factory=Settings)
     repo: Optional[str] = None  # last-bound repo path (convenience)
+    # Consent + risk-graded permission policy (see core.permissions). Stored as a plain
+    # dict so config has no import dependency on the policy module.
+    permissions: Dict[str, Any] = field(default_factory=dict)
 
     # -- roster helpers ----------------------------------------------------
 
@@ -140,6 +143,7 @@ class Config:
             "judge": self.judge.to_dict(),
             "settings": self.settings.to_dict(),
             "repo": self.repo,
+            "permissions": self.permissions,
         }
 
     @classmethod
@@ -149,6 +153,7 @@ class Config:
             judge=JudgeConfig.from_dict(d.get("judge", {})),
             settings=Settings.from_dict(d.get("settings", {})),
             repo=d.get("repo"),
+            permissions=d.get("permissions", {}),
         )
 
 
