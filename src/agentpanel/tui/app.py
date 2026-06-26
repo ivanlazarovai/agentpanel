@@ -125,35 +125,61 @@ class ChangeDirScreen(ModalScreen[Optional[Path]]):
         self.dismiss(None)
 
 
-class StopAgentsScreen(ModalScreen[Optional[str]]):
-    """Pick a running agent to stop (or all). Dismisses with the agent name, '*', or None."""
+class AgentControlScreen(ModalScreen[None]):
+    """Manage the panel's agents live: stop a running pass, bench an agent for the rest of
+    the session (excluded from future turns + consensus), or un-bench it. Applies actions in
+    place and stays open so you can manage several."""
 
-    BINDINGS = [("escape", "cancel", "Cancel")]
+    BINDINGS = [("escape", "close", "Close")]
 
-    def __init__(self, agents) -> None:
+    def __init__(self, session) -> None:
         super().__init__()
-        self._agents = list(agents)
+        self.session = session
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="stop-box"):
-            yield Static("[bold]Stop a running agent[/]\n[dim]Kills its current work now; the "
-                         "panel continues without it this turn.[/]", markup=True)
-            for a in self._agents:
-                yield Button(f"■ Stop {a}", id=f"stop__{a}", variant="error")
-            if len(self._agents) > 1:
-                yield Button("■ Stop ALL", id="stopall", variant="error")
-            yield Button("Cancel", id="cancel")
+        with Vertical(id="agentctl-box"):
+            yield Static("[bold]Agents — stop · bench[/]\n[dim]Stop kills the current pass "
+                         "(the agent can rejoin next turn). Bench removes it for the rest of "
+                         "this session — no more turns, can't be elected.[/]", markup=True)
+            yield Vertical(id="agentctl-rows")
+            with Horizontal(id="agentctl-foot"):
+                yield Button("Close", id="close")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    async def on_mount(self) -> None:
+        await self._rebuild_rows()
+
+    async def _rebuild_rows(self) -> None:
+        rows = self.query_one("#agentctl-rows", Vertical)
+        await rows.remove_children()
+        for p in self.session.panelists:
+            benched = getattr(p, "benched", False)
+            busy = p.adapter.is_busy
+            state = ("⛔ benched" if benched else "● running" if busy else "· idle")
+            buttons = []
+            if busy and not benched:
+                buttons.append(Button("■ Stop", id=f"stop__{p.name}", variant="error"))
+            if benched:
+                buttons.append(Button("↩ Un-bench", id=f"unbench__{p.name}", variant="success"))
+            else:
+                buttons.append(Button("⛔ Bench", id=f"bench__{p.name}", variant="warning"))
+            await rows.mount(Horizontal(Static(f"{p.name}   [dim]{state}[/]", markup=True),
+                                        *buttons, classes="ctl-row"))
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
-        if bid == "cancel":
+        if bid == "close":
             self.dismiss(None)
-        elif bid == "stopall":
-            self.dismiss("*")
-        else:
-            self.dismiss(bid.partition("__")[2])
+            return
+        action, _, name = bid.partition("__")
+        if action == "stop":
+            await self.session.stop_agent(name)
+        elif action == "bench":
+            await self.session.bench_agent(name)
+        elif action == "unbench":
+            self.session.unbench_agent(name)
+        await self._rebuild_rows()
 
-    def action_cancel(self) -> None:
+    def action_close(self) -> None:
         self.dismiss(None)
 
 
@@ -183,9 +209,14 @@ class AgentPanelApp(App):
     #dir-box { width: 80; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
     #dir-box Input { margin-top: 1; }
     ChangeDirScreen { align: center middle; }
-    StopAgentsScreen { align: center middle; }
-    #stop-box { width: 64; height: auto; border: thick $error; background: $surface; padding: 1 2; }
-    #stop-box Button { width: 100%; margin-top: 1; }
+    AgentControlScreen { align: center middle; }
+    #agentctl-box { width: 80; height: auto; max-height: 80%; border: thick $warning;
+                    background: $surface; padding: 1 2; }
+    #agentctl-rows { height: auto; }
+    .ctl-row { height: auto; padding: 1 0; border-bottom: dashed $panel-darken-2; }
+    .ctl-row Label { width: 1fr; min-width: 24; }
+    .ctl-row Button { margin: 0 0 0 1; min-width: 10; }
+    #agentctl-foot { height: 3; align-horizontal: right; }
     """
     # priority=True so these fire even while the ask Input is focused (Ctrl-A/E/O would
     # otherwise be consumed by the input as cursor/edit keys).
@@ -194,7 +225,7 @@ class AgentPanelApp(App):
         Binding("ctrl+d", "change_dir", "Change folder", priority=True),
         Binding("ctrl+a", "agent_setup", "Agent setup", priority=True),
         Binding("ctrl+e", "execute", "Execute elected", priority=True),
-        Binding("ctrl+s", "stop_agents", "Stop agent(s)", priority=True),
+        Binding("ctrl+s", "stop_agents", "Stop / bench", priority=True),
         Binding("ctrl+o", "open_session", "Open agent's session", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
@@ -396,33 +427,13 @@ class AgentPanelApp(App):
         return self.manager.get(str(tabs.active).removeprefix("pane-"))
 
     def action_stop_agents(self) -> None:
-        """Stop one or more running agents in the active session (Ctrl-S) — for when an
-        agent goes off and burns tokens."""
+        """Manage agents in the active session (Ctrl-S): stop a runaway pass, or bench an
+        agent for the rest of the session."""
         session = self._active_session()
         if session is None:
-            self.notify("No active session.", severity="warning")
+            self.notify("Convene a session first.", severity="warning")
             return
-        working = session.working_agents()
-        if not working:
-            self.notify("No agents are running right now.", severity="warning")
-            return
-
-        def _done(choice) -> None:
-            if not choice:
-                return
-
-            async def go() -> None:
-                if choice == "*":
-                    stopped = await session.stop_all()
-                    self.notify(f"Stopped: {', '.join(stopped) or 'none'}", severity="warning")
-                else:
-                    ok = await session.stop_agent(choice)
-                    self.notify(f"Stopped {choice}." if ok else f"{choice} wasn't running.",
-                                severity="warning")
-
-            self.run_worker(go(), exclusive=False)
-
-        self.push_screen(StopAgentsScreen(working), _done)
+        self.push_screen(AgentControlScreen(session))
 
     def action_execute(self) -> None:
         """Run the active session's elected agent (Ctrl-E). Gated commands prompt live."""

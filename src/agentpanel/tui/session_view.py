@@ -67,7 +67,8 @@ class AgentCard(Collapsible):
             return (f"{self._agent}   {spinner} working · {self._steps} steps · {el}s"
                     + self._spend_str())
         tag = {"proceed": "  ▶ PROCEED", "stand_down": "  ■ stand down",
-               "monitor": "  👁 observing", "candidate": "  ? candidate"}.get(self._decision, "")
+               "monitor": "  👁 observing", "candidate": "  ? candidate",
+               "benched": "  ⛔ benched"}.get(self._decision, "")
         return f"{self._agent}   " + self._summary_line(*self._last) + self._spend_str() + tag
 
     # -- live progress -----------------------------------------------------

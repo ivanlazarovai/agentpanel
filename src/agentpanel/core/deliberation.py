@@ -47,6 +47,7 @@ class Panelist:
     session_ref: Optional[str] = None  # the agent's own resume handle, carried across turns
     record: Optional[PlanRecord] = None  # latest plan
     emitted_ref: Optional[str] = None  # last session_ref surfaced via AGENT_SESSION
+    benched: bool = False  # user benched it: skip in future turns + drop from consensus
 
     @property
     def name(self) -> str:
@@ -105,8 +106,13 @@ class DeliberationEngine:
             outcome = self._escalated_outcome(result, turns_used)
         return outcome
 
+    def active_panelists(self) -> List[Panelist]:
+        """Panelists still in play (not benched by the user)."""
+        return [p for p in self.panelists if not p.benched]
+
     def records(self) -> List[PlanRecord]:
-        return [p.record for p in self.panelists if p.record is not None]
+        # Benched agents drop out of consensus — their plan no longer counts or can be elected.
+        return [p.record for p in self.panelists if p.record is not None and not p.benched]
 
     # -- one synchronized turn (the BARRIER) -------------------------------
 
@@ -117,24 +123,25 @@ class DeliberationEngine:
 
         # Critique turns are a round-robin red-team: each responder is assigned to refute
         # one peer's plan, and must defend against the peer assigned to refute theirs.
+        active = self.active_panelists()  # benched agents don't run this (or any future) turn
         assignments: Dict[str, str] = {}
         if mode == "critique":
-            responders = [p for p in self.panelists if _responded_any(p)]
+            responders = [p for p in active if _responded_any(p)]
             assignments = _round_robin([p.name for p in responders])
             for critic, target in assignments.items():
                 self.bus.publish(EventKind.RED_TEAM, turn=turn, critic=critic, target=target)
 
-        # Launch every panelist concurrently; gather is the barrier. Each gets its own
+        # Launch every active panelist concurrently; gather is the barrier. Each gets its own
         # critique context (panel + its red-team assignment + the critique aimed at it).
         await asyncio.gather(
             *(self._invoke(p, mode, turn,
                            self._critique_context(p, turn, assignments) if mode == "critique" else "")
-              for p in self.panelists),
+              for p in active),
             return_exceptions=True,
         )
 
-        responded = [p.name for p in self.panelists if _responded_this_turn(p, turn)]
-        missing = [p.name for p in self.panelists if p.name not in responded]
+        responded = [p.name for p in active if _responded_this_turn(p, turn)]
+        missing = [p.name for p in active if p.name not in responded]
         self.bus.publish(
             EventKind.BARRIER_REACHED, turn=turn, responded=responded, missing=missing
         )

@@ -139,6 +139,29 @@ class Session:
                              message=f"stopped: {', '.join(stopped)}")
         return stopped
 
+    async def bench_agent(self, name: str) -> bool:
+        """Bench an agent for the REST of this session: stop it now and exclude it from all
+        future turns + consensus (it can't be elected). Returns True if found."""
+        p = next((x for x in self.panelists if x.name == name), None)
+        if p is None:
+            return False
+        if p.adapter.is_busy:
+            await p.adapter.terminate()
+        p.benched = True
+        self.bus.publish(EventKind.DECISION, agent=name, decision="benched",
+                         reason="benched by user — excluded for the rest of this session")
+        return True
+
+    def unbench_agent(self, name: str) -> bool:
+        """Return a benched agent to the panel for upcoming turns."""
+        p = next((x for x in self.panelists if x.name == name), None)
+        if p is None or not p.benched:
+            return False
+        p.benched = False
+        self.bus.publish(EventKind.DECISION, agent=name, decision="candidate",
+                         reason="un-benched by user — back in the panel")
+        return True
+
     async def execute(self, agent_names: List[str], review_rounds: int = 0) -> Dict[str, str]:
         """Have the named agents carry out the agreed plan in their own worktrees — with
         **coopetition**: the agents that weren't selected don't go idle. They observe the
@@ -155,10 +178,10 @@ class Session:
             raise RuntimeError("nothing to execute — run deliberation first")
 
         by_name = {p.name: p for p in self.panelists}
-        workers = [n for n in agent_names if n in by_name]
+        workers = [n for n in agent_names if n in by_name and not by_name[n].benched]
         observers = [
             p.name for p in self.panelists
-            if p.record and p.record.responded and p.name not in workers
+            if p.record and p.record.responded and p.name not in workers and not p.benched
         ]
         for name in workers:
             self.bus.publish(EventKind.DECISION, agent=name, decision="proceed",
