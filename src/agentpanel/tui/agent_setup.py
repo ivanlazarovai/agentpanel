@@ -8,6 +8,8 @@ browser/device-code flow owns the terminal, then control returns to the panel.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +22,22 @@ from ..core import config as cfg
 from ..core import ftu
 from ..core.config import Config
 from ..core.ftu import DetectedAgent
+
+
+def _resolve_install_cmd(cmd: str) -> str:
+    """Prepend sudo to a global npm install when the npm prefix isn't writable (EACCES),
+    so the install actually succeeds — the interactive terminal handles the password prompt."""
+    if "install -g" not in cmd and "i -g" not in cmd:
+        return cmd
+    try:
+        prefix = subprocess.run(["npm", "config", "get", "prefix"], capture_output=True,
+                                text=True, timeout=8).stdout.strip()
+        node_modules = os.path.join(prefix, "lib", "node_modules")
+        if prefix and os.path.isdir(node_modules) and not os.access(node_modules, os.W_OK):
+            return "sudo " + cmd
+    except Exception:
+        pass
+    return cmd
 
 
 class AgentSetupScreen(ModalScreen[Optional[Config]]):
@@ -102,16 +120,25 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
         agent = next((a for a in self._agents if a.name == name), None)
         if agent is None:
             return
-        ops = {"install": ftu.install, "login": ftu.login, "logout": ftu.logout,
-               "relogin": ftu.relogin, "status": ftu.status}
-        op = ops.get(action)
-        if op is None:
+        # Run attached to the terminal so npm output / browser logins / prompts are visible.
+        cmds = {"install": agent.install_cmd, "login": agent.auth_cmd,
+                "logout": agent.auth_logout_cmd, "relogin": agent.auth_logout_cmd,
+                "status": agent.auth_status_cmd}
+        cmd = cmds.get(action)
+        if not cmd:
             return
+        if action == "install":
+            cmd = _resolve_install_cmd(cmd)
         with self.app.suspend():
-            print(f"\n── {action} {agent.label} ──  (follow any prompts, then return)\n")
-            res = await op(agent)
-            if action == "status" or not res.ok:
-                input("\nPress Enter to return to AgentPanel…")
+            print(f"\n── {action} {agent.label} ──\n$ {cmd}\n")
+            if cmd.startswith("sudo "):
+                print("(global install needs admin rights — you'll be asked for your password)\n")
+            res = await ftu.run_interactive(cmd)
+            if action == "relogin" and res.ok:  # logout done → now log in
+                print(f"\n$ {agent.auth_cmd}\n")
+                res = await ftu.run_interactive(agent.auth_cmd)
+            print(f"\n[{'ok' if res.ok else 'failed: ' + res.output}]")
+            input("Press Enter to return to AgentPanel…")
         await self._rebuild()
 
     async def _save(self) -> None:
