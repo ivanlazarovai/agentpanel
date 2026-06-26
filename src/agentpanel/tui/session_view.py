@@ -62,6 +62,17 @@ class SessionView(VerticalScroll):
         self._turn_text: Dict[Tuple[str, int], str] = {}
         self._turn_static: Dict[Tuple[str, int], Static] = {}
         self.bar_text: str = ""  # last consensus-bar text (also handy for tests)
+        self._open: Dict[str, str] = {}  # agent -> command to open its native session
+        self._elected: str = ""
+
+    def primary_open(self):
+        """The most relevant agent session to open: the elected one, else any available.
+        Returns (agent, command) or None."""
+        if self._elected in self._open:
+            return self._elected, self._open[self._elected]
+        for agent, cmd in self._open.items():
+            return agent, cmd
+        return None
 
     def compose(self):
         yield Static("● initializing…", id="consensus-bar", classes="consensus-bar")
@@ -131,11 +142,15 @@ class SessionView(VerticalScroll):
         self._cards[agent].set_summary("✓", approach, d.get("fit"))
 
     async def _on_agent_session(self, d) -> None:
-        # Surface the agent's own native session command so the user can open + watch it.
+        # Remember the agent's own native session command (Ctrl-O opens it interactively).
         cmd = d.get("open_command")
+        if not cmd:
+            return
+        self._open[d["agent"]] = cmd
         card = self._cards.get(d["agent"])
-        if cmd and card is not None and not getattr(card, "_session_shown", False):
-            await card.mount(Static(f"⮑ open this agent's session:  {cmd}", classes="open-cmd"))
+        if card is not None and not getattr(card, "_session_shown", False):
+            await card.mount(Static(f"⮑ Ctrl-O to open {d['agent']}'s live session  ({cmd})",
+                                    classes="open-cmd"))
             card._session_shown = True
 
     async def _on_decision(self, d) -> None:
@@ -171,6 +186,7 @@ class SessionView(VerticalScroll):
     async def _on_converged(self, d) -> None:
         # Expand the elected agent's card so the winning plan is front-and-center.
         elected = d.get("elected")
+        self._elected = elected or ""
         if elected in self._cards:
             self._cards[elected].collapsed = False
 

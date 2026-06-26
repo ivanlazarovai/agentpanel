@@ -51,7 +51,9 @@ class CursorAgentAdapter(CliAdapter):
         return f"(cd {workdir} && {self.binary} --resume {session_ref})"
 
     def _args(self, mode: str, prompt: str, ctx: RunContext) -> List[str]:
-        args = ["-p", prompt, "--output-format", "stream-json"]
+        # `--trust` is essential: without it cursor-agent prints a "Workspace Trust
+        # Required" prompt and exits with no output (so it never contributes to the panel).
+        args = ["-p", prompt, "--output-format", "stream-json", "--trust"]
         if mode == "execute":
             args += ["--force"]  # auto-approve edits/commands in the worktree
         else:
