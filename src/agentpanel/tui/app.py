@@ -45,6 +45,37 @@ Each keeps its own mind, its own tools, its own session.
 You don't drive them. [bold cyan]You convene them.[/]"""
 
 
+class AgentRow(Static):
+    """One connected agent on the home page: an animated spinner while a background process
+    checks it, settling to its account/plan (or a problem) once the check returns."""
+
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, label: str) -> None:
+        super().__init__("", markup=True, classes="w-agent-row")
+        self.label_text = label
+        self._frame = 0
+        self._checking = True
+        self._timer = None
+
+    def on_mount(self) -> None:
+        self._render_frame()
+        self._timer = self.set_interval(0.08, self._render_frame)
+
+    def _render_frame(self) -> None:
+        if not self._checking or not self.is_mounted:
+            return
+        self._frame = (self._frame + 1) % len(self.FRAMES)
+        self.update(f"[cyan]{self.FRAMES[self._frame]}[/]  [bold]{self.label_text}[/]"
+                    f"   [dim]— checking…[/]")
+
+    def settle(self, text: str) -> None:
+        self._checking = False
+        if self._timer is not None:
+            self._timer.stop()
+        self.update(text)
+
+
 class Welcome(Vertical):
     """The first screen — a centered block shown until the first session convenes.
 
@@ -56,6 +87,7 @@ class Welcome(Vertical):
         yield Static(_banner(), classes="w-banner")
         yield Static("a council of superagents — mediated, not commanded", classes="w-tag")
         yield Static(PROSE, classes="w-prose", markup=True)
+        yield Vertical(id="agents")  # connected agents, filled + animated by the app
         yield Static("[dim]· checking which agents are available …[/]",
                      id="welcome-status", classes="w-status", markup=True)
         yield Static("[bold cyan]▸[/]  Type a request [bold]below[/] and press "
@@ -81,6 +113,9 @@ class AgentPanelApp(App):
     .w-tag { color: $text-muted; margin-bottom: 1; }
     .w-status { margin-top: 1; }
     .w-cta { margin-top: 1; }
+    #agents { width: auto; height: auto; margin-top: 1; }
+    .w-agents-head { width: auto; color: $text-muted; }
+    .w-agent-row { width: auto; height: 1; }
     """
     # priority=True so these fire even while the ask Input is focused (Ctrl-A/E/O would
     # otherwise be consumed by the input as cursor/edit keys).
@@ -118,30 +153,61 @@ class AgentPanelApp(App):
         if self._demo_question:
             await self.start_session(self._demo_question)
         elif restored == 0:
-            # Welcome is showing: fill in agent status without blocking the UI, then nudge.
-            self.run_worker(self._lazy_load_agents(), exclusive=False)
+            # Welcome is showing: list connected agents and check them in the background.
+            self.run_worker(self._populate_home_agents(), exclusive=False)
 
-    async def _lazy_load_agents(self) -> None:
-        """Detect agents in the background, show their status in the welcome, and steer a
-        first-time user into setup (auto-open) or nudge a thin panel toward Ctrl-A."""
+    async def _populate_home_agents(self) -> None:
+        """List the connected agents on the home page, animate a spinner per agent while a
+        background process checks each one, and settle each row to its account/plan as it
+        verifies. Then surface what's available to add and steer first-time users into setup."""
+        import asyncio
+
         from ..core import ftu
+        from ..core.adapters import KNOWN_AGENTS, catalog_entry
 
+        config = self.manager.config
+        roster = config.roster
         try:
-            agents = await ftu.detect()
+            box = self.query_one("#agents", Vertical)
         except Exception:
             return
-        config = self.manager.config
-        roster = {a.name for a in config.roster}
-        ready = [p.name for p in (config.panel() or config.enabled_agents())]
-        extra = [a.label for a in agents if a.installed and a.name not in roster]
+        await box.mount(Static("[bold]Connected agents[/]", classes="w-agents-head"))
+        rows: dict = {}
+        if roster:
+            for a in roster:
+                label = str((catalog_entry(a.name) or {}).get("label") or a.name)
+                row = AgentRow(label)
+                rows[a.name] = row
+                await box.mount(row)
+        else:
+            await box.mount(Static("[yellow]none connected yet[/] — press [bold]^A[/] to add",
+                                   classes="w-agent-row"))
+        roster_names = set(rows)
 
-        line = (f"[green]✓[/] panel ready: [bold]{', '.join(ready)}[/]" if ready
-                else "[yellow]●[/] no agents configured yet")
+        async def probe(entry) -> "ftu.DetectedAgent":
+            # Each agent's row settles the moment ITS own check returns (not after all).
+            detected = await ftu._probe(entry)
+            acct = await ftu.account_status(detected) if detected.installed else None
+            row = rows.get(str(entry["name"]))
+            if row is not None:
+                if detected.installed and acct and acct.line:
+                    row.settle(f"[green]✓[/]  [bold]{row.label_text}[/]   [dim]{acct.line}[/]")
+                elif detected.installed:
+                    row.settle(f"[green]✓[/]  [bold]{row.label_text}[/]   [dim]connected[/]")
+                else:
+                    row.settle(f"[red]✗[/]  [bold]{row.label_text}[/]   [dim]not installed — ^A[/]")
+            return detected
+
+        detected = await asyncio.gather(*(probe(e) for e in KNOWN_AGENTS))
+        extra = [d.label for d in detected if d.installed and d.name not in roster_names]
+
+        ready = [p.name for p in (config.panel() or config.enabled_agents())]
+        hint = f"[green]●[/] {len(ready)} in panel" if ready else "[yellow]●[/] no panel yet"
         if extra:
-            line += f"   ·   available: {', '.join(extra)}"
-        line += "\n[dim]press [bold]^A[/] to set up agents · switch accounts · add more[/]"
+            hint += f"   ·   available to add: {', '.join(extra)}"
+        hint += "\n[dim]press [bold]^A[/] to set up agents · switch accounts · add more[/]"
         try:
-            self.query_one("#welcome-status", Static).update(line)
+            self.query_one("#welcome-status", Static).update(hint)
         except Exception:
             return  # welcome already replaced by a session
 
