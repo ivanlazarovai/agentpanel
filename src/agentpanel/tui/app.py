@@ -15,7 +15,7 @@ from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, Static, TabbedContent, TabPane
 
 from ..core import config as cfg
@@ -23,38 +23,48 @@ from ..core.config import Config
 from ..core.session import Session, SessionManager
 from .session_view import SessionView
 
-WELCOME = """
-[bold cyan]      ╭───────────────────────────────────────────────╮
-      │   ◆   A G E N T   P A N E L   ◆                 │
-      ╰───────────────────────────────────────────────╯[/]
-[dim]        a council of superagents — mediated, not commanded[/]
+def _banner() -> str:
+    """A title box whose three lines are guaranteed equal width (so the corners always
+    line up — hand-drawn ASCII boxes drift when the content line and borders differ)."""
+    label = "◆   A G E N T   P A N E L   ◆"
+    inner = len(label) + 8
+    top = "╭" + "─" * inner + "╮"
+    mid = "│" + label.center(inner) + "│"
+    bot = "╰" + "─" * inner + "╯"
+    return f"{top}\n{mid}\n{bot}"
 
 
-  [bold]Ask once.[/]  Each agent plans it [italic]alone[/], as if it were the only
-  mind in existence. Then they meet in the open — judging,
-  conceding, converging on a plan they can defend.
+PROSE = """[bold]Ask once.[/]  Each agent plans it [italic]alone[/], as if it were the only
+mind in existence. Then they meet in the open — judging,
+conceding, converging on a plan they can defend.
 
-  The one best positioned [bold green]builds[/].  The others don't rest:
-  they [bold]watch and coach[/].  Competition [italic]and[/] cooperation, together.
+The one best positioned [bold green]builds[/].  The others don't rest:
+they [bold]watch and coach[/].  Competition [italic]and[/] cooperation, together.
 
-  Each keeps its own mind, its own tools, its own session.
-  You don't drive them. [bold cyan]You convene them.[/]
-
-[dim]  ─────────────────────────────────────────────────────────[/]
-  [bold cyan]▸[/]  Type a request above and press [bold]Enter[/] to convene the panel.
-"""
+Each keeps its own mind, its own tools, its own session.
+You don't drive them. [bold cyan]You convene them.[/]"""
 
 
-class Welcome(Static):
-    """The first screen — shown until the first session convenes."""
+class Welcome(Vertical):
+    """The first screen — a centered block shown until the first session convenes.
 
-    def __init__(self) -> None:
-        super().__init__(WELCOME, id="welcome", markup=True)
+    Each child is auto-width and the block is centered as a whole, so multi-line content
+    (the banner, the prose) keeps its internal alignment instead of being justified
+    line-by-line (which is what skewed the old box)."""
+
+    def compose(self) -> ComposeResult:
+        yield Static(_banner(), classes="w-banner")
+        yield Static("a council of superagents — mediated, not commanded", classes="w-tag")
+        yield Static(PROSE, classes="w-prose", markup=True)
+        yield Static("[dim]· checking which agents are available …[/]",
+                     id="welcome-status", classes="w-status", markup=True)
+        yield Static("[bold cyan]▸[/]  Type a request [bold]below[/] and press "
+                     "[bold]Enter[/] to convene the panel.", classes="w-cta", markup=True)
 
 
 class AgentPanelApp(App):
     CSS = """
-    #ask { dock: top; height: 3; }
+    #ask { height: 3; }
     #ask-input { width: 1fr; }
     #sessions { height: 1fr; }
     SessionView { height: 1fr; padding: 1; }
@@ -65,7 +75,12 @@ class AgentPanelApp(App):
     .diffstat { color: $success; padding: 0 1; height: auto; }
     .escalation { background: $warning-darken-2; color: $text; padding: 1; margin: 1 0; }
     Collapsible { border: round $primary-darken-2; margin: 0 0 1 0; }
-    #welcome { height: 1fr; content-align: center middle; padding: 1 2; }
+    Welcome { height: 1fr; align: center middle; padding: 1 2; }
+    Welcome > Static { width: auto; height: auto; }
+    .w-banner { color: $accent; text-style: bold; }
+    .w-tag { color: $text-muted; margin-bottom: 1; }
+    .w-status { margin-top: 1; }
+    .w-cta { margin-top: 1; }
     """
     # priority=True so these fire even while the ask Input is focused (Ctrl-A/E/O would
     # otherwise be consumed by the input as cursor/edit keys).
@@ -86,10 +101,10 @@ class AgentPanelApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Horizontal(id="ask"):
-            yield Input(placeholder="Ask the panel…  (Enter to start a new session)", id="ask-input")
         yield Welcome()
         yield TabbedContent(id="sessions")
+        with Horizontal(id="ask"):  # in flow below the content → sits just above the footer
+            yield Input(placeholder="Ask the panel…  (Enter to convene a new session)", id="ask-input")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -97,15 +112,50 @@ class AgentPanelApp(App):
         self.sub_title = f"{len(self.manager.config.panel() or self.manager.config.enabled_agents())} panelists"
         self.query_one("#sessions", TabbedContent).display = False  # welcome until first session
         self.set_interval(1.0, self._tick_progress)  # live elapsed clocks on working agents
+        restored = 0
         if self._is_git_repo():
-            await self._restore_saved_sessions()  # pick up where we left off
+            restored = await self._restore_saved_sessions()  # pick up where we left off
         if self._demo_question:
             await self.start_session(self._demo_question)
+        elif restored == 0:
+            # Welcome is showing: fill in agent status without blocking the UI, then nudge.
+            self.run_worker(self._lazy_load_agents(), exclusive=False)
 
-    async def _restore_saved_sessions(self) -> None:
+    async def _lazy_load_agents(self) -> None:
+        """Detect agents in the background, show their status in the welcome, and steer a
+        first-time user into setup (auto-open) or nudge a thin panel toward Ctrl-A."""
+        from ..core import ftu
+
+        try:
+            agents = await ftu.detect()
+        except Exception:
+            return
+        config = self.manager.config
+        roster = {a.name for a in config.roster}
+        ready = [p.name for p in (config.panel() or config.enabled_agents())]
+        extra = [a.label for a in agents if a.installed and a.name not in roster]
+
+        line = (f"[green]✓[/] panel ready: [bold]{', '.join(ready)}[/]" if ready
+                else "[yellow]●[/] no agents configured yet")
+        if extra:
+            line += f"   ·   available: {', '.join(extra)}"
+        line += "\n[dim]press [bold]^A[/] to set up agents · switch accounts · add more[/]"
+        try:
+            self.query_one("#welcome-status", Static).update(line)
+        except Exception:
+            return  # welcome already replaced by a session
+
+        if not cfg.config_exists():  # genuine first run → open setup for them
+            self.notify("Welcome — let's set up your panel.", timeout=6)
+            self.set_timer(0.6, self.action_agent_setup)
+        elif len(ready) < 2:  # has config but too thin to deliberate
+            self.notify("Panel is thin — press ^A to add more agents.",
+                        severity="warning", timeout=6)
+
+    async def _restore_saved_sessions(self) -> int:
         sessions = self.manager.load_saved(self.repo)
         if not sessions:
-            return
+            return 0
         self._reveal_panel()
         tabs = self.query_one("#sessions", TabbedContent)
         for session in sessions[:8]:  # most recent first
@@ -118,6 +168,7 @@ class AgentPanelApp(App):
             )
             await view.populate_restored(session)
         self.notify(f"Restored {len(sessions)} previous session(s) — Ctrl-O to resume an agent.")
+        return len(sessions)
 
     def _tick_progress(self) -> None:
         for view in self.query(SessionView):
@@ -239,7 +290,7 @@ class AgentPanelApp(App):
     def _reveal_panel(self) -> None:
         """Swap the welcome splash for the live session tabs (once)."""
         try:
-            self.query_one("#welcome", Welcome).display = False
+            self.query_one(Welcome).display = False
             self.query_one("#sessions", TabbedContent).display = True
         except Exception:
             pass
