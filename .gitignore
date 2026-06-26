@@ -17,3 +17,6 @@ venv/
 
 # OS
 .DS_Store
+
+# AgentPanel runtime (per-repo worktrees + session state)
+.agentpanel/
