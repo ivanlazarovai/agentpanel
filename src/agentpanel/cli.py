@@ -240,15 +240,18 @@ def _launch(mock: bool) -> int:
         run_tui(config=_demo_config(), demo_question="Design the session persistence layer")
         return 0
     if not cfg.config_exists():
-        # First run: route through the FTU wizard, then launch the panel with the result.
-        from .tui.ftu_screen import run as run_ftu
+        # Self-aware first run: no separate command needed — bootstart from zero.
+        from .core import ftu
 
-        print("First run — launching setup…")
-        config = run_ftu()
-        if config is None:
-            print("Setup cancelled. Run `agentpanel setup` when ready, "
-                  "or `agentpanel --mock` to try a demo panel.")
+        print("No configuration found — bootstrapping AgentPanel (one-time)…\n")
+        config = asyncio.run(ftu.auto_bootstrap(Path.cwd(), emit=lambda m: print(f"  {m}")))
+        cfg.save(config)
+        panel = [a.name for a in config.panel()]
+        if not panel:
+            print("\nNo agents are ready yet — resolve the notes above and run `agentpanel` again "
+                  "(or `agentpanel --mock` for a demo).")
             return 1
+        print(f"\nReady: {', '.join(panel)}. Launching…\n")
     else:
         config = cfg.load()
     run_tui(config=config)

@@ -104,7 +104,15 @@ class ClaudeCodeAdapter(CliAdapter):
             final = obj.get("result", "") or ""
             if obj.get("is_error"):
                 return [AdapterEvent.error(final or "claude reported an error")]
-            return [AdapterEvent.done(final, sid)]
+            # The result line carries real cost + token usage — capture for metrics.
+            usage = obj.get("usage") or {}
+            tokens = {
+                "input": usage.get("input_tokens"),
+                "output": usage.get("output_tokens"),
+                "cache_read": usage.get("cache_read_input_tokens"),
+            }
+            return [AdapterEvent.done(final, sid, cost_usd=obj.get("total_cost_usd"),
+                                      tokens=tokens)]
 
         return []
 

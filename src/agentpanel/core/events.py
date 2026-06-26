@@ -46,6 +46,7 @@ class EventKind(str, enum.Enum):
     PANELIST_TIMEOUT = "panelist_timeout"  # data: {agent, turn}
 
     # Deliberation results
+    JUDGE = "judge"  # data: {turn, backend, duration_ms, cost_usd?}
     CONSENSUS_COMPUTED = "consensus_computed"  # data: {turn, agreement, clusters, dissents}
     CONVERGED = "converged"  # data: {plan, agreement, elected, runners_up}
     ESCALATED = "escalated"  # data: {options: [...], reason}
@@ -85,6 +86,12 @@ class EventBus:
         self._replay_buffer = replay_buffer
         self._seq = itertools.count(1)
         self._closed = False
+        self._listeners: List = []  # synchronous taps (e.g. metrics) called on every publish
+
+    def add_listener(self, fn) -> None:
+        """Register a synchronous ``fn(Event)`` called for every published event. Used by
+        the metrics recorder; kept fire-and-forget so a logging error never breaks a run."""
+        self._listeners.append(fn)
 
     def publish(self, kind: EventKind, **data: Any) -> Event:
         """Emit an event to every current subscriber and the replay history."""
@@ -94,6 +101,11 @@ class EventBus:
             self._history = self._history[-self._replay_buffer :]
         for q in list(self._subscribers):
             q.put_nowait(event)
+        for fn in self._listeners:
+            try:
+                fn(event)
+            except Exception:  # a metrics/logging failure must never break the run
+                pass
         return event
 
     async def subscribe(self, replay: bool = True) -> AsyncIterator[Event]:

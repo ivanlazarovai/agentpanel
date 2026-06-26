@@ -81,6 +81,8 @@ class AdapterEvent:
     full_text: str = ""
     session_ref: Optional[str] = None
     is_error: bool = False
+    cost_usd: Optional[float] = None  # reported by the agent on a done event, if available
+    tokens: Optional[dict] = None  # input/output token usage, if available
 
     @classmethod
     def token(cls, text: str) -> "AdapterEvent":
@@ -91,8 +93,10 @@ class AdapterEvent:
         return cls(type="tool", tool=tool, detail=detail)
 
     @classmethod
-    def done(cls, full_text: str, session_ref: Optional[str] = None) -> "AdapterEvent":
-        return cls(type="done", full_text=full_text, session_ref=session_ref)
+    def done(cls, full_text: str, session_ref: Optional[str] = None,
+             cost_usd: Optional[float] = None, tokens: Optional[dict] = None) -> "AdapterEvent":
+        return cls(type="done", full_text=full_text, session_ref=session_ref,
+                   cost_usd=cost_usd, tokens=tokens)
 
     @classmethod
     def meta(cls, session_ref: Optional[str] = None) -> "AdapterEvent":
@@ -260,10 +264,12 @@ class CliAdapter(AgentAdapter):
                     if ev.type == "token":
                         collected.append(ev.text)
                     if ev.type == "done":
-                        # Subclass already assembled full_text; honor it.
+                        # Subclass already assembled full_text; honor it (+ any cost/usage).
                         yield AdapterEvent.done(
                             ev.full_text or "".join(collected),
                             ev.session_ref or session_ref,
+                            cost_usd=ev.cost_usd,
+                            tokens=ev.tokens,
                         )
                         await _drain(proc)
                         return

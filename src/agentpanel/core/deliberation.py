@@ -19,6 +19,7 @@ The engine is UI-agnostic: progress flows out as :mod:`events`; it returns a
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -141,8 +142,9 @@ class DeliberationEngine:
             self.question, peers, ctx
         )
         self.bus.publish(EventKind.PANELIST_STARTED, agent=p.name, mode=mode, turn=turn)
+        started = time.monotonic()
         try:
-            full, sref, failed, err = await asyncio.wait_for(
+            full, sref, failed, err, cost, tokens = await asyncio.wait_for(
                 self._consume(p, gen), timeout=self.settings.barrier_timeout_s
             )
         except asyncio.TimeoutError:
@@ -179,16 +181,20 @@ class DeliberationEngine:
         self.bus.publish(
             EventKind.PANELIST_DONE, agent=p.name, mode=mode, turn=turn,
             summary=_first_line(full), fit=p.record.fit,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            cost_usd=cost, tokens=tokens,
         )
 
     async def _consume(self, p: Panelist, gen) -> tuple:
         """Drain an adapter's event stream, forwarding to the bus. Returns
-        (full_text, session_ref, failed, error)."""
+        (full_text, session_ref, failed, error, cost_usd, tokens)."""
         collected: List[str] = []
         sref = p.session_ref
         full = ""
         failed = False
         err = ""
+        cost = None
+        tokens = None
         async for ev in gen:  # type: AdapterEvent
             if ev.session_ref:
                 sref = ev.session_ref
@@ -205,15 +211,22 @@ class DeliberationEngine:
                 self.bus.publish(EventKind.PANELIST_ERROR, agent=p.name, message=ev.detail)
             elif ev.type == "done":
                 full = ev.full_text or "".join(collected)
+                cost = ev.cost_usd
+                tokens = ev.tokens
         if not full:
             full = "".join(collected)
-        return full, sref, failed, err
+        return full, sref, failed, err, cost, tokens
 
     # -- consensus ---------------------------------------------------------
 
     async def _consensus(self, turn: int) -> ConsensusResult:
         plans = self.records()
+        started = time.monotonic()
         clusters = await self.judge.cluster(self.question, plans)
+        self.bus.publish(
+            EventKind.JUDGE, turn=turn, backend=type(self.judge).__name__,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
         result = evaluate(plans, clusters, self.settings.consensus_threshold, turn)
         self.bus.publish(
             EventKind.CONSENSUS_COMPUTED,

@@ -8,6 +8,7 @@ as tabs), each fully isolated: its own worktrees, its own bus, its own asyncio t
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -18,6 +19,7 @@ from .config import Config
 from .deliberation import DeliberationEngine, Panelist, SessionOutcome
 from .events import EventBus, EventKind
 from .judge import build_judge
+from .metrics import MetricsRecorder, MetricsSink, repo_metrics_path
 from .worktree import WorktreeManager
 
 
@@ -45,6 +47,10 @@ class Session:
 
     async def prepare(self) -> None:
         """Build the panel: adapters, worktrees, judge, engine. No model calls yet."""
+        # Append-only metrics (per-repo, git-ignored). Tap the bus before anything is
+        # published. Skipped for repo-less/ephemeral sessions so nothing leaks to $HOME.
+        if self.repo is not None:
+            MetricsRecorder(MetricsSink(repo_metrics_path(self.repo)), self.id).register(self.bus)
         self.bus.publish(EventKind.SESSION_CREATED, id=self.id, question=self.question)
 
         members = self.config.panel() or self.config.enabled_agents()
@@ -158,6 +164,8 @@ class Session:
         ctx = RunContext(workdir=handle.path, session_ref=panelist.session_ref,
                          model=panelist.config.model)
         failed = False
+        cost = None
+        started = time.monotonic()
         async for ev in panelist.adapter.execute(prompt, ctx):
             if ev.session_ref:
                 panelist.session_ref = ev.session_ref  # chain the worker's own session
@@ -168,6 +176,8 @@ class Session:
             elif ev.type == "error":
                 failed = True
                 self.bus.publish(EventKind.PANELIST_ERROR, agent=name, message=ev.detail)
+            elif ev.type == "done":
+                cost = ev.cost_usd
         committed = None
         if not failed and await self.worktrees.has_changes(name):
             committed = await self.worktrees.commit_all(
@@ -175,7 +185,8 @@ class Session:
             )
         diffstat = await self.worktrees.diffstat(name)
         self.bus.publish(EventKind.EXECUTION_DONE, agent=name, branch=handle.branch,
-                         committed=bool(committed))
+                         committed=bool(committed), role="worker", round=rnd,
+                         duration_ms=int((time.monotonic() - started) * 1000), cost_usd=cost)
         self.bus.publish(EventKind.DIFF_READY, agent=name, branch=handle.branch, diffstat=diffstat)
         return diffstat
 

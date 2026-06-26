@@ -54,7 +54,8 @@ join a panel — exactly what the FTU verification handshake checks for.)
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/agentpanel bootstrap              # cold start: install + log in + verify agents, then configure
+.venv/bin/agentpanel                        # one word: self-bootstraps on first run, then launches
+.venv/bin/agentpanel bootstrap              # explicit cold start: install + log in + verify, then configure
 .venv/bin/agentpanel doctor                 # which agents are installed / installable
 .venv/bin/agentpanel --mock                 # launch the TUI with a built-in mock panel
 .venv/bin/agentpanel ask --mock "Design the session persistence layer"   # headless
@@ -92,6 +93,10 @@ src/agentpanel/
 ```
 
 The TUI (and a later IDE/web frontend) are just additional subscribers to the same event
-bus — the engine never imports a UI.
+bus — the engine never imports a UI. A **metrics recorder** is another such subscriber: it
+appends one timestamped JSON line per event (panelist done, judge, decision, observation,
+execution, outcome) to `<repo>/.agentpanel/metrics.jsonl` — git-ignored, append-only, with
+per-agent `duration_ms`/`cost_usd`/role so you can trend performance and cost over time. The
+format is deliberately minimal and flexible: new metrics are just new fields.
 
 See `/Users/ivolazy/.claude/plans/wise-purring-shore.md` for the full plan.
