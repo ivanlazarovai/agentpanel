@@ -115,11 +115,21 @@ class DeliberationEngine:
         self.bus.publish(EventKind.TURN_STARTED, turn=turn)
         self.bus.publish(EventKind.PHASE_CHANGED, phase=phase, turn=turn)
 
-        peers = self._render_panel(exclude=None) if mode == "critique" else ""
+        # Critique turns are a round-robin red-team: each responder is assigned to refute
+        # one peer's plan, and must defend against the peer assigned to refute theirs.
+        assignments: Dict[str, str] = {}
+        if mode == "critique":
+            responders = [p for p in self.panelists if _responded_any(p)]
+            assignments = _round_robin([p.name for p in responders])
+            for critic, target in assignments.items():
+                self.bus.publish(EventKind.RED_TEAM, turn=turn, critic=critic, target=target)
 
-        # Launch every panelist concurrently; gather is the barrier.
+        # Launch every panelist concurrently; gather is the barrier. Each gets its own
+        # critique context (panel + its red-team assignment + the critique aimed at it).
         await asyncio.gather(
-            *(self._invoke(p, mode, turn, peers) for p in self.panelists),
+            *(self._invoke(p, mode, turn,
+                           self._critique_context(p, turn, assignments) if mode == "critique" else "")
+              for p in self.panelists),
             return_exceptions=True,
         )
 
@@ -308,9 +318,48 @@ class DeliberationEngine:
             blocks.append(f"### Panelist: {p.name}\n{p.record.text.strip()}")
         return "\n\n".join(blocks) if blocks else "(no plans yet)"
 
+    def _critique_context(self, p: Panelist, turn: int, assignments: Dict[str, str]) -> str:
+        """Per-agent critique context: the full panel, this agent's red-team assignment,
+        and (turn 2+) the critique that was aimed at this agent's own plan."""
+        parts = [self._render_panel(exclude=None)]
+        target = assignments.get(p.name)
+        if target:
+            parts.append(
+                f"\n=== YOUR RED-TEAM ASSIGNMENT ===\n"
+                f"You are assigned to RED-TEAM {target}'s plan above. Try hard to break it: "
+                f"surface hidden assumptions, missing cases, failure modes, and cost. Be a "
+                f"tough but fair critic — the panel only wants a plan that survives scrutiny, "
+                f"not agreement for its own sake. State your refutation explicitly, then give "
+                f"your own revised plan."
+            )
+        if turn >= 2:  # records now hold last turn's critiques, so route the attack on p
+            critic = next((c for c, t in assignments.items() if t == p.name), None)
+            crec = next((q.record for q in self.panelists if q.name == critic and q.record), None)
+            if critic and crec and crec.text.strip():
+                parts.append(
+                    f"\n=== A CRITIQUE AIMED AT YOUR PLAN (from {critic}) ===\n"
+                    f"{crec.text.strip()}\n"
+                    f"Defend your plan against it, or concede the point and revise."
+                )
+        return "\n".join(parts)
+
 
 def _responded_this_turn(p: Panelist, turn: int) -> bool:
     return bool(p.record and p.record.turn == turn and p.record.responded)
+
+
+def _responded_any(p: Panelist) -> bool:
+    """Has this panelist produced a usable plan in any prior turn?"""
+    return bool(p.record and p.record.responded)
+
+
+def _round_robin(names: List[str]) -> Dict[str, str]:
+    """Assign each name to red-team the next one, cyclically: a→b, b→c, c→a.
+    Empty for fewer than two responders (no one to critique)."""
+    n = len(names)
+    if n < 2:
+        return {}
+    return {names[i]: names[(i + 1) % n] for i in range(n)}
 
 
 def _first_line(text: str) -> str:

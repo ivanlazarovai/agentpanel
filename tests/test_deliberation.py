@@ -94,6 +94,35 @@ async def test_election_picks_highest_fit_in_leading_cluster():
     assert session.outcome.elected == "high"
 
 
+def test_round_robin_assignment():
+    from agentpanel.core.deliberation import _round_robin
+
+    assert _round_robin(["a", "b", "c"]) == {"a": "b", "b": "c", "c": "a"}
+    assert _round_robin(["a", "b"]) == {"a": "b", "b": "a"}
+    assert _round_robin(["solo"]) == {}  # nobody to critique
+    assert _round_robin([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_critique_turns_assign_round_robin_red_team():
+    # c starts on B then switches -> guarantees critique turns happen.
+    session = await run_panel(
+        [mock_agent("a", plan="A"), mock_agent("b", plan="A"),
+         mock_agent("c", plan="B", switch_to="A", switch_turn=2)],
+        threshold=0.9, max_turns=3,
+    )
+    rt = [(e.data["critic"], e.data["target"]) for e in session.bus.history()
+          if e.kind == EventKind.RED_TEAM]
+    assert rt, "expected red-team assignments in the critique phase"
+    # round-robin: each critic targets a distinct peer, nobody critiques themselves
+    for critic, target in rt:
+        assert critic != target
+    # every responder is both a critic and a target within a turn (full coverage)
+    critics = {c for c, _ in rt}
+    targets = {t for _, t in rt}
+    assert critics == targets == {"a", "b", "c"}
+
+
 @pytest.mark.asyncio
 async def test_mediation_emits_sessions_and_decisions():
     # The panel surfaces each agent's native session handle and relays proceed/stand-down.

@@ -69,6 +69,8 @@ class _Printer:
         elif k == EventKind.PHASE_CHANGED:
             label = "isolated planning" if d["phase"] == "isolated_planning" else f"critique · turn {d['turn']}"
             print(_c(f"\n┌─ {label} ", _CYAN))
+        elif k == EventKind.RED_TEAM:
+            print(_c(f"│  ⚔ {d['critic']} red-teams {d['target']}", _YELLOW))
         elif k == EventKind.PANELIST_STARTED:
             print(_c(f"│  {d['agent']} ", _BOLD) + _c(f"({d['mode']})", _DIM))
         elif k == EventKind.PANELIST_TOOL:

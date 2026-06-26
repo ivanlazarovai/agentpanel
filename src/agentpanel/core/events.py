@@ -29,6 +29,7 @@ class EventKind(str, enum.Enum):
     SESSION_CREATED = "session_created"
     PHASE_CHANGED = "phase_changed"  # data: {phase, turn}
     TURN_STARTED = "turn_started"  # data: {turn}
+    RED_TEAM = "red_team"  # data: {turn, critic, target} — round-robin critique assignment
     BARRIER_REACHED = "barrier_reached"  # data: {turn, responded, missing}
 
     # The agent's OWN native session — so the user can open it and watch the real work.

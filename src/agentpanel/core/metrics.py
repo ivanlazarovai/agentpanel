@@ -27,6 +27,7 @@ from .events import Event, EventKind
 # Events worth keeping for trends. Token streams are intentionally excluded (too noisy);
 # everything here is a discrete, chartable fact about performance, cost, or outcome.
 RECORDED_KINDS = {
+    EventKind.RED_TEAM,
     EventKind.PANELIST_DONE,
     EventKind.PANELIST_ERROR,
     EventKind.PANELIST_TIMEOUT,

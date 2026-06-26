@@ -300,15 +300,22 @@ async def _drain(proc: asyncio.subprocess.Process) -> None:
 
 
 def _critique_prompt(question: str, peers: str) -> str:
-    """The shared instruction wrapped around the panel for a critique turn."""
+    """The shared instruction wrapped around the panel for a critique turn.
+
+    Deliberation here is adversarial by design: convergence only counts if it survives
+    scrutiny. If a RED-TEAM ASSIGNMENT appears below, carry it out rigorously — your job
+    there is to find what's wrong, not to be agreeable."""
     return (
         "You are one panelist among several coding agents answering the SAME request "
         "on a shared repository. Below are all panelists' current plans (including your "
-        "own). Read them, then:\n"
-        "1. State concisely where you AGREE and DISAGREE with each peer.\n"
-        "2. Revise YOUR plan if a peer convinced you; otherwise defend it.\n"
-        "3. Name which single plan you would back if you had to pick one now.\n"
-        "4. Name which agent is best positioned to execute, and why.\n\n"
+        "own), and possibly a red-team assignment for you. Then:\n"
+        "1. If you were given a RED-TEAM ASSIGNMENT, refute that peer's plan hard — "
+        "assumptions, edge cases, failure modes, cost. Don't soften it to be agreeable.\n"
+        "2. Address any critique aimed at YOUR plan: defend it or concede and revise.\n"
+        "3. State concisely where you AGREE and DISAGREE with the others.\n"
+        "4. Give your revised plan (begin with 'APPROACH:' and end with 'FIT:').\n"
+        "5. Name which single plan you would back now, and which agent is best positioned "
+        "to execute.\n\n"
         f"=== THE REQUEST ===\n{question}\n\n"
         f"=== THE PANEL SO FAR ===\n{peers}\n"
     )
