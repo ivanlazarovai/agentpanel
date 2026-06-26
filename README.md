@@ -1,5 +1,7 @@
 # AgentPanel
 
+[![CI](https://github.com/ivanlazarovai/agentpanel/actions/workflows/ci.yml/badge.svg)](https://github.com/ivanlazarovai/agentpanel/actions/workflows/ci.yml)
+
 A **local multi-agent control plane**. Convene a *panel* of coding agents (Claude Code,
 Cursor, Codex, …) on one shared repo. Ask them all the same thing; each plans it **in
 isolation**, then they **deliberate in synchronized turns** — judging where they agree and
