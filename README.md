@@ -60,6 +60,8 @@ ln -s "$(pwd)/agentpanel" /usr/local/bin/agentpanel
 
 ./agentpanel bootstrap             # explicit cold start: install + log in + verify, then configure
 ./agentpanel add cursor codex      # quickly add specific agents (install + log in + verify); empty = any
+./agentpanel account set cursor <API_KEY>          # switch an agent to another account
+./agentpanel account clone cursor cursor2 <API_KEY> # run two accounts of the same agent side-by-side
 ./agentpanel doctor                # which agents are installed / installable
 ./agentpanel sessions              # list saved sessions — restart `agentpanel` to resume where you left off
 ./agentpanel --mock                # launch the TUI with a built-in mock panel

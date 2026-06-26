@@ -54,6 +54,12 @@ class AgentConfig:
     enabled: bool = True
     verified: bool = False  # passed the FTU dev-cycle handshake
     weight: float = 1.0  # vote weight in consensus (default equal)
+    account: Optional[str] = None  # human label for which account this entry uses
+    # Per-agent process env — the credentials/account for this entry (e.g.
+    # {"CURSOR_API_KEY": "..."} or {"ANTHROPIC_API_KEY": "env:WORK_KEY"}). A value of
+    # "env:VAR" is resolved from the ambient environment at run time (keeps secrets out
+    # of the config file). This is what makes accounts switchable / runnable side-by-side.
+    env: Dict[str, str] = field(default_factory=dict)
     extra_args: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:

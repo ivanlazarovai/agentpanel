@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 from abc import ABC, abstractmethod
@@ -188,6 +189,19 @@ class CliAdapter(AgentAdapter):
             return self.binary
         return shutil.which(self.binary) if self.binary else None
 
+    def subprocess_env(self) -> Optional[dict]:
+        """Ambient env + this agent's account credentials, or None to inherit unchanged.
+        A config value ``"env:VAR"`` is resolved from the ambient environment at run time."""
+        extra = {}
+        for key, value in (self.config.env or {}).items():
+            if isinstance(value, str) and value.startswith("env:"):
+                resolved = os.environ.get(value[4:])
+                if resolved is not None:
+                    extra[key] = resolved
+            elif value is not None:
+                extra[key] = str(value)
+        return {**os.environ, **extra} if extra else None
+
     async def _probe_version(self) -> str:
         path = self.resolved_binary()
         if not path:
@@ -244,6 +258,7 @@ class CliAdapter(AgentAdapter):
                 path,
                 *args,
                 cwd=str(ctx.workdir),
+                env=self.subprocess_env(),  # apply this agent's account credentials
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

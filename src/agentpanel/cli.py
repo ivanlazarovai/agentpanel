@@ -17,7 +17,7 @@ import asyncio
 import shutil
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from . import __version__
 from .core import config as cfg
@@ -44,6 +44,14 @@ def main(argv: List[str] | None = None) -> int:
     add.add_argument("--dir", default=".", help="base directory (default: cwd)")
     sess = sub.add_parser("sessions", help="list previously-saved panel sessions (resumable)")
     sess.add_argument("--repo", default=".", help="repository (default: cwd)")
+    acc = sub.add_parser("account",
+                         help="switch an agent's account, or clone it to run multiple accounts")
+    acc.add_argument("action", choices=["list", "set", "clear", "clone"])
+    acc.add_argument("agent", nargs="?", help="roster agent name")
+    acc.add_argument("rest", nargs="*",
+                     help="credentials as KEY=VALUE or a bare API key; for `clone`, the first "
+                          "value is the new agent name, then credentials")
+    acc.add_argument("--label", help="human label for the account")
     parser.add_argument("--mock", action="store_true",
                         help="launch the TUI with a built-in mock panel (no real agents)")
     ask = sub.add_parser("ask", help="run one headless panel session")
@@ -74,6 +82,8 @@ def main(argv: List[str] | None = None) -> int:
         return asyncio.run(_add(args.names, args.dir))
     if args.command == "sessions":
         return _sessions(args.repo)
+    if args.command == "account":
+        return _account(args.action, args.agent, args.rest, args.label)
     if args.command == "ask":
         return asyncio.run(_ask(args.question, args.repo, args.mock, args.no_worktrees,
                                 args.execute, args.keep, args.review))
@@ -153,6 +163,85 @@ async def _doctor() -> int:
 # ---------------------------------------------------------------------------
 # Stubs for commands implemented in later build steps
 # ---------------------------------------------------------------------------
+
+
+# Default credential env var per agent kind (so `account set cursor <key>` just works).
+_KIND_KEYVAR = {
+    "claude_code": "ANTHROPIC_API_KEY",
+    "cursor_agent": "CURSOR_API_KEY",
+    "codex": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+
+def _parse_creds(items: List[str], kind: str) -> dict:
+    """Each item is KEY=VALUE, or a bare value mapped to the kind's default credential var."""
+    env: dict = {}
+    default_var = _KIND_KEYVAR.get(kind)
+    for item in items:
+        if "=" in item:
+            key, _, value = item.partition("=")
+            env[key.strip()] = value
+        elif default_var:
+            env[default_var] = item
+    return env
+
+
+def _account(action: str, agent: Optional[str], rest: List[str], label: Optional[str]) -> int:
+    config = cfg.load()
+    if action == "list":
+        if not config.roster:
+            print("No agents configured. Run `agentpanel bootstrap` or `agentpanel add`.")
+            return 0
+        for a in config.roster:
+            creds = ", ".join(sorted(a.env.keys())) if a.env else "(default login)"
+            print(f"  {a.name:12} [{a.kind:12}]  account: {a.account or '—':10}  creds: {creds}")
+        print("\nSwitch:  agentpanel account set <agent> <API_KEY>"
+              "\nRun two: agentpanel account clone <agent> <newname> <API_KEY>")
+        return 0
+
+    if not agent:
+        print("which agent? e.g. `agentpanel account set cursor <key>`")
+        return 1
+
+    if action == "clone":
+        if not rest:
+            print("usage: agentpanel account clone <agent> <newname> <API_KEY...>")
+            return 1
+        src = config.get(agent)
+        if src is None:
+            print(f"no agent '{agent}' in the roster (`agentpanel account list`).")
+            return 1
+        newname, creds = rest[0], rest[1:]
+        clone = AgentConfig(name=newname, kind=src.kind, model=src.model, binary=src.binary,
+                            enabled=True, verified=src.verified, account=label or newname,
+                            env=_parse_creds(creds, src.kind))
+        config.upsert(clone)
+        cfg.save(config)
+        print(f"Cloned {agent} → {newname} ({src.kind}). Both can now run in the panel.")
+        return 0
+
+    target = config.get(agent)
+    if target is None:
+        print(f"no agent '{agent}' in the roster (`agentpanel account list`).")
+        return 1
+    if action == "clear":
+        target.env = {}
+        target.account = None
+        cfg.save(config)
+        print(f"Cleared {agent}'s account — back to its default login.")
+        return 0
+    # set
+    creds = _parse_creds(rest, target.kind)
+    if not creds:
+        print(f"provide a key: `agentpanel account set {agent} <API_KEY>`")
+        return 1
+    target.env.update(creds)
+    if label:
+        target.account = label
+    cfg.save(config)
+    print(f"Switched {agent} to account '{target.account or 'set'}' ({', '.join(creds)}).")
+    return 0
 
 
 def _sessions(repo: str) -> int:

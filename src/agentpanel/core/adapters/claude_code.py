@@ -26,16 +26,17 @@ class _PersistentClaude:
     """One long-running ``claude`` process fed messages over stream-json stdin, so context
     accumulates in-memory across deliberation turns (no per-call startup / session replay)."""
 
-    def __init__(self, binary: str, args: List[str], cwd: Path) -> None:
+    def __init__(self, binary: str, args: List[str], cwd: Path, env: Optional[dict] = None) -> None:
         self.binary = binary
         self.args = args
         self.cwd = cwd
+        self.env = env
         self.proc: Optional[asyncio.subprocess.Process] = None
         self.session_ref: Optional[str] = None
 
     async def start(self) -> None:
         self.proc = await asyncio.create_subprocess_exec(
-            self.binary, *self.args, cwd=str(self.cwd),
+            self.binary, *self.args, cwd=str(self.cwd), env=self.env,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -143,7 +144,8 @@ class ClaudeCodeAdapter(CliAdapter):
             yield AdapterEvent.error(f"{self.name}: binary '{self.binary}' not found")
             return
         if self._live is None:
-            self._live = _PersistentClaude(path, self._persistent_args(ctx), ctx.workdir)
+            self._live = _PersistentClaude(path, self._persistent_args(ctx), ctx.workdir,
+                                           env=self.subprocess_env())
             try:
                 await self._live.start()
             except Exception as exc:  # pragma: no cover - exec failure
