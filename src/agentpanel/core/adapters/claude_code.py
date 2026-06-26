@@ -13,6 +13,8 @@ line (``result`` text, ``session_id``, ``is_error``). We normalize those to Adap
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -75,6 +77,20 @@ class ClaudeCodeAdapter(CliAdapter):
             args += ["--resume", ctx.session_ref]
         # Ensure the agent can read the worktree it's running in.
         args += ["--add-dir", str(ctx.workdir)]
+        # Route gated tool requests (Bash/gh, writes, fetches) through AgentPanel's
+        # permission gate so the agent doesn't stall asking — it's answered by policy.
+        if mode == "execute" and ctx.gate_env is not None:
+            mcp = {
+                "mcpServers": {
+                    "agentpanel": {
+                        "command": sys.executable,
+                        "args": ["-m", "agentpanel.mcp_approver"],
+                        "env": ctx.gate_env,
+                    }
+                }
+            }
+            args += ["--mcp-config", json.dumps(mcp),
+                     "--permission-prompt-tool", "mcp__agentpanel__approve"]
         args += list(self.config.extra_args)
         return args
 

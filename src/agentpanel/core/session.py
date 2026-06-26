@@ -8,6 +8,7 @@ as tabs), each fully isolated: its own worktrees, its own bus, its own asyncio t
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -161,9 +162,11 @@ class Session:
                 "watching and want you to succeed; incorporate or rebut) ===\n" + feedback
             )
         # The agent owns its edits, tools, and commits; the panel only relays + reads.
-        # Execution gets full effort (the real work) unless the agent overrides it.
+        # Execution gets full effort (the real work) unless the agent overrides it, and
+        # its gated tool requests are answered by AgentPanel's permission policy.
         ctx = RunContext(workdir=handle.path, session_ref=panelist.session_ref,
-                         model=panelist.config.model, effort=panelist.config.effort)
+                         model=panelist.config.model, effort=panelist.config.effort,
+                         gate_env=self._gate_env())
         failed = False
         cost = None
         started = time.monotonic()
@@ -218,6 +221,23 @@ class Session:
             elif ev.type == "done" and ev.full_text:
                 collected = [ev.full_text]
         return "".join(collected).strip()
+
+    def _gate_env(self) -> Optional[Dict[str, str]]:
+        """Env for the permission-gate MCP server an executing agent will consult.
+        None when there's no repo (no metrics/consent scope)."""
+        if self.repo is None:
+            return None
+        from . import config as cfg
+        from .metrics import repo_metrics_path
+        max_auto = str((self.config.permissions or {}).get("max_auto_risk", "medium"))
+        env: Dict[str, str] = {
+            "AGENTPANEL_HOME": str(cfg.GLOBAL_DIR),
+            "AGENTPANEL_METRICS": str(repo_metrics_path(self.repo)),
+            "AGENTPANEL_MAX_AUTO_RISK": max_auto,
+        }
+        if os.environ.get("PATH"):
+            env["PATH"] = os.environ["PATH"]  # so the agent can find gh/git/etc.
+        return env
 
     def _plan_text(self, name: str) -> str:
         """The agreed plan (converged), else this agent's own plan."""

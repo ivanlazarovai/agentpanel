@@ -64,6 +64,9 @@ class RunContext:
     effort: Optional[str] = None  # low|medium|high|xhigh|max — bound exploration cost/latency
     timeout_s: Optional[float] = None
     turn: int = 0  # 0 = isolated planning; 1..Y = critique turns
+    # When set (execution), route the agent's gated tool requests through AgentPanel's
+    # permission gate (the MCP approver), with these env vars for the spawned server.
+    gate_env: Optional[dict] = None
 
 
 @dataclass

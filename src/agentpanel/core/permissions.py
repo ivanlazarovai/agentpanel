@@ -119,6 +119,32 @@ class PermissionRule:
         return cls(**known)
 
 
+# Map an agent's tool name to a permission category. Covers Claude Code's built-in tools;
+# unknown tools default to RUN_SHELL (treated as a command — the safe assumption).
+_TOOL_ACTION = {
+    "Bash": RUN_SHELL,
+    "Edit": WRITE_PATH, "Write": WRITE_PATH, "MultiEdit": WRITE_PATH, "NotebookEdit": WRITE_PATH,
+    "Read": READ_PATH, "Glob": READ_PATH, "Grep": READ_PATH, "LS": READ_PATH,
+    "WebFetch": NETWORK, "WebSearch": NETWORK,
+}
+
+
+def map_tool_request(agent: str, tool_name: str, tool_input) -> PermissionRequest:
+    """Turn an agent's '<tool_name>(<input>)' request into a PermissionRequest the policy
+    can grade. Pulls the most decision-relevant field (command / path / url) as the target."""
+    action = _TOOL_ACTION.get(tool_name, RUN_SHELL)
+    target = ""
+    if isinstance(tool_input, dict):
+        for key in ("command", "file_path", "path", "notebook_path", "url", "pattern"):
+            if tool_input.get(key):
+                target = str(tool_input[key])
+                break
+    # `git push` issued via Bash is really a publish action — grade it as such.
+    if action == RUN_SHELL and "git push" in target:
+        action = GIT_PUSH
+    return PermissionRequest(agent=agent, action=action, target=target, detail=tool_name)
+
+
 def classify(req: PermissionRequest, granted_dirs: List[Path]) -> tuple:
     """Return ``(RiskLevel, reason)`` for a request — the always-on risk judgement."""
     risk = _BASE_RISK.get(req.action, RiskLevel.MEDIUM)
@@ -223,6 +249,20 @@ class PermissionPolicy:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def headless_resolve(policy: "PermissionPolicy", req: PermissionRequest,
+                     max_auto_risk: RiskLevel = RiskLevel.MEDIUM) -> tuple:
+    """Resolve a request to a concrete allow/deny when there's no interactive channel
+    (an agent mid-run). Honors the policy's rules; for an unmatched 'ask' it auto-allows
+    up to ``max_auto_risk`` (agents run in an isolated, reviewed worktree) and denies above.
+    Returns ``(behavior, Decision)`` where behavior is 'allow' | 'deny'."""
+    d = policy.decide(req)
+    if d.outcome == "allow":
+        return "allow", d
+    if d.outcome == "deny":
+        return "deny", d
+    return ("allow" if int(d.risk) <= int(max_auto_risk) else "deny"), d
 
 
 def _as_path(target: str) -> Optional[Path]:
