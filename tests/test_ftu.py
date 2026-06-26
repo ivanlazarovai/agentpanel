@@ -16,12 +16,12 @@ async def test_detect_returns_catalog_with_health_for_drivable():
     agents = await ftu.detect()
     assert len(agents) >= 4
     by_name = {a.name: a for a in agents}
-    # Claude + Cursor are the drivable ones; they get a real health probe.
+    # Claude, Cursor and Codex are drivable; they get a real health probe.
     assert by_name["claude"].drivable is True
     assert by_name["claude"].health is not None
-    # Codex is catalogued as installable-but-not-drivable-yet.
-    assert by_name["codex"].drivable is False
-    assert by_name["codex"].install_cmd  # has an install hint
+    assert by_name["codex"].drivable is True  # driven via `codex exec --json`
+    # Antigravity is a desktop GUI agent — no headless adapter, so not drivable.
+    assert by_name["antigravity"].drivable is False
 
 
 def test_write_brief_creates_files_with_markers(tmp_path: Path):

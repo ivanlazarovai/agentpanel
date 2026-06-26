@@ -259,6 +259,7 @@ class CliAdapter(AgentAdapter):
                 *args,
                 cwd=str(ctx.workdir),
                 env=self.subprocess_env(),  # apply this agent's account credentials
+                stdin=asyncio.subprocess.DEVNULL,  # one-shot: prompt is an arg; don't block on stdin
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

@@ -46,12 +46,13 @@ class AgentSetupScreen(ModalScreen[Optional[Config]]):
 
     CSS = """
     AgentSetupScreen { align: center middle; }
-    #panel { width: 90; height: 80%; border: thick $primary; background: $surface; padding: 1 2; }
+    #panel { width: 96%; max-width: 160; height: 88%; border: thick $primary;
+             background: $surface; padding: 1 2; }
     #panel .title { text-style: bold; color: $accent; }
     #rows { height: 1fr; }
     .agent-row { height: auto; padding: 1 0; border-bottom: dashed $panel-darken-2; }
-    .agent-row Label { width: 1fr; }
-    .agent-row Button { margin: 0 1 0 0; min-width: 10; }
+    .agent-row Label { width: 1fr; min-width: 40; }
+    .agent-row Button { margin: 0 1 0 0; min-width: 12; }
     #foot { height: 3; align-horizontal: right; }
     """
     BINDINGS = [("escape", "close", "Close")]

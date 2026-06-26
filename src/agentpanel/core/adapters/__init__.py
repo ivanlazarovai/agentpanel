@@ -7,12 +7,14 @@ from typing import Dict, List, Type
 from ..config import AgentConfig
 from ..adapter import AgentAdapter
 from .claude_code import ClaudeCodeAdapter
+from .codex import CodexAdapter
 from .cursor_agent import CursorAgentAdapter
 from .mock import MockAdapter
 
 REGISTRY: Dict[str, Type[AgentAdapter]] = {
     ClaudeCodeAdapter.kind: ClaudeCodeAdapter,
     CursorAgentAdapter.kind: CursorAgentAdapter,
+    CodexAdapter.kind: CodexAdapter,
     MockAdapter.kind: MockAdapter,
 }
 
@@ -54,7 +56,7 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "kind": "codex",
         "label": "OpenAI Codex CLI",
         "probe": "codex",
-        "adapter": False,
+        "adapter": True,  # driven headlessly via `codex exec --json`
         "install": "npm install -g @openai/codex",
         "auth": "codex login",  # ChatGPT/device-code login
         "auth_logout": "codex logout",
@@ -116,5 +118,6 @@ __all__ = [
     "build",
     "ClaudeCodeAdapter",
     "CursorAgentAdapter",
+    "CodexAdapter",
     "MockAdapter",
 ]
