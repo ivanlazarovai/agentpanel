@@ -74,12 +74,15 @@ class CursorAgentAdapter(CliAdapter):
         events: List[AdapterEvent] = []
         kind = obj.get("type")
 
-        # Terminal result line.
+        # Terminal result line — carries the final text AND token usage.
         if kind in ("result", "final", "done"):
             final = _coerce_text(obj.get("result") or obj.get("text") or obj.get("content"))
             if obj.get("is_error") or obj.get("error"):
                 return [AdapterEvent.error(final or "cursor-agent reported an error")]
-            return [AdapterEvent.done(final, sid)]
+            usage = obj.get("usage") or {}
+            tokens = {"input": usage.get("inputTokens"), "output": usage.get("outputTokens"),
+                      "cache_read": usage.get("cacheReadTokens")} if usage else None
+            return [AdapterEvent.done(final, sid, tokens=tokens)]
 
         # Partial text delta (with --stream-partial-output) or a plain text event.
         if kind in ("text", "delta", "assistant_delta"):
@@ -106,13 +109,36 @@ class CursorAgentAdapter(CliAdapter):
                 if text:
                     events.append(AdapterEvent.token(text))
 
-        # Tool / command activity.
+        # Tool / command activity. Cursor nests the tool under `tool_call.<name>ToolCall`
+        # and emits both "started" and "completed" — surface only the start, named, so the
+        # turn body doesn't fill with empty ⚙ bullets.
         elif kind in ("tool_call", "tool_use", "command"):
-            events.append(AdapterEvent.tool_use(_coerce_text(obj.get("name") or obj.get("tool"))))
+            if obj.get("subtype") != "completed":
+                name, detail = _cursor_tool(obj)
+                if name:
+                    events.append(AdapterEvent.tool_use(name, detail))
 
         if sid:
             events.append(AdapterEvent.meta(session_ref=sid))
         return events
+
+
+def _cursor_tool(obj: dict) -> tuple:
+    """Pull a readable (name, detail) out of cursor's nested tool_call shape:
+    ``{"tool_call": {"globToolCall": {"args": {...}}}}`` -> ("glob", "<pattern/path>")."""
+    name = _coerce_text(obj.get("name") or obj.get("tool"))
+    if name:
+        return name, ""
+    tc = obj.get("tool_call")
+    if isinstance(tc, dict):
+        for key, val in tc.items():
+            if key.endswith("ToolCall") and isinstance(val, dict):
+                short = key[: -len("ToolCall")] or key
+                args = val.get("args") if isinstance(val.get("args"), dict) else {}
+                detail = _coerce_text(args.get("globPattern") or args.get("path")
+                                      or args.get("targetFile") or args.get("command") or "")
+                return short, detail[:80]
+    return "", ""
 
 
 def _find_session(obj: dict) -> Any:
