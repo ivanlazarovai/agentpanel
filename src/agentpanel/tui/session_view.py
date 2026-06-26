@@ -91,6 +91,28 @@ class SessionView(VerticalScroll):
         self._open: Dict[str, str] = {}  # agent -> command to open its native session
         self._elected: str = ""
 
+    async def populate_restored(self, session) -> None:
+        """Render a restored session: prior plans, the outcome, and resumable agent sessions."""
+        o = getattr(session, "outcome", None)
+        if o is not None:
+            self._elected = o.elected or ""
+            self._set_bar(f"↩ restored · {o.status} · elected {o.elected or '—'}")
+        else:
+            self._set_bar("↩ restored session")
+        for p in session.panelists:
+            card = self._cards.get(p.name)
+            if card is None:
+                continue
+            if p.record and p.record.text.strip():
+                card.set_summary("✓", extract_label(p.record.text) or "saved plan", p.record.fit)
+            cmd = p.adapter.open_command(p.session_ref, p.workdir)
+            if cmd:
+                self._open[p.name] = cmd
+                await card.mount(Static(f"⮑ Ctrl-O to resume {p.name}'s session  ({cmd})",
+                                        classes="open-cmd"))
+        if self._elected in self._cards:
+            self._cards[self._elected].collapsed = False
+
     def primary_open(self):
         """The most relevant agent session to open: the elected one, else any available.
         Returns (agent, command) or None."""

@@ -167,6 +167,10 @@ class ClaudeCodeAdapter(CliAdapter):
             args += ["--effort", ctx.effort]
         if ctx.budget_usd:
             args += ["--max-budget-usd", str(ctx.budget_usd)]
+        # A restored session arrives with a prior session_ref → resume the agent's own
+        # native session so its accumulated context comes back (fresh otherwise).
+        if ctx.session_ref:
+            args += ["--resume", ctx.session_ref]
         args += ["--add-dir", str(ctx.workdir)]
         args += list(self.config.extra_args)
         return args

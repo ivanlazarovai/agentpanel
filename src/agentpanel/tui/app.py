@@ -93,8 +93,27 @@ class AgentPanelApp(App):
         self.sub_title = f"{len(self.manager.config.panel() or self.manager.config.enabled_agents())} panelists"
         self.query_one("#sessions", TabbedContent).display = False  # welcome until first session
         self.set_interval(1.0, self._tick_progress)  # live elapsed clocks on working agents
+        if self._is_git_repo():
+            await self._restore_saved_sessions()  # pick up where we left off
         if self._demo_question:
             await self.start_session(self._demo_question)
+
+    async def _restore_saved_sessions(self) -> None:
+        sessions = self.manager.load_saved(self.repo)
+        if not sessions:
+            return
+        self._reveal_panel()
+        tabs = self.query_one("#sessions", TabbedContent)
+        for session in sessions[:8]:  # most recent first
+            agents = [p.name for p in session.panelists]
+            if not agents:
+                continue
+            view = SessionView(agents, id=f"view-{session.id}")
+            await tabs.add_pane(
+                TabPane(f"↩ {session.id}: {session.question[:16]}", view, id=f"pane-{session.id}")
+            )
+            await view.populate_restored(session)
+        self.notify(f"Restored {len(sessions)} previous session(s) — Ctrl-O to resume an agent.")
 
     def _tick_progress(self) -> None:
         for view in self.query(SessionView):

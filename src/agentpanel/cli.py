@@ -42,6 +42,8 @@ def main(argv: List[str] | None = None) -> int:
     add.add_argument("names", nargs="*",
                      help="agent names to add (e.g. cursor codex); empty = any available")
     add.add_argument("--dir", default=".", help="base directory (default: cwd)")
+    sess = sub.add_parser("sessions", help="list previously-saved panel sessions (resumable)")
+    sess.add_argument("--repo", default=".", help="repository (default: cwd)")
     parser.add_argument("--mock", action="store_true",
                         help="launch the TUI with a built-in mock panel (no real agents)")
     ask = sub.add_parser("ask", help="run one headless panel session")
@@ -70,6 +72,8 @@ def main(argv: List[str] | None = None) -> int:
         return asyncio.run(_bootstrap(args.dir, not args.no_install, not args.no_login))
     if args.command == "add":
         return asyncio.run(_add(args.names, args.dir))
+    if args.command == "sessions":
+        return _sessions(args.repo)
     if args.command == "ask":
         return asyncio.run(_ask(args.question, args.repo, args.mock, args.no_worktrees,
                                 args.execute, args.keep, args.review))
@@ -149,6 +153,22 @@ async def _doctor() -> int:
 # ---------------------------------------------------------------------------
 # Stubs for commands implemented in later build steps
 # ---------------------------------------------------------------------------
+
+
+def _sessions(repo: str) -> int:
+    from .core.store import SessionStore
+
+    records = SessionStore(Path(repo).resolve()).load_all()
+    if not records:
+        print("No saved sessions for this repo. (They're written under .agentpanel/sessions/.)")
+        return 0
+    print(f"Saved sessions ({len(records)}) — launch `agentpanel` to resume them:\n")
+    for r in records:
+        panel = ", ".join(p.name for p in r.panelists) or "(none)"
+        print(f"  {r.id}  [{r.status}]  {r.updated[:16]}")
+        print(f"      {r.question[:70]}")
+        print(f"      panel: {panel}   ·   elected: {r.elected or '—'}")
+    return 0
 
 
 async def _add(names: List[str], directory: str) -> int:

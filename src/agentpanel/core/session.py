@@ -44,6 +44,7 @@ class Session:
     engine: Optional[DeliberationEngine] = None
     outcome: Optional[SessionOutcome] = None
     status: str = "pending"  # pending | running | converged | escalated | error
+    created: str = ""  # iso timestamp (for persistence)
     # Interactive permission channel: async (request) -> {"behavior": ...}. When set, an
     # executing agent's gated requests are surfaced to it live (TUI modal / stdin prompt).
     approval_resolver: Optional[object] = None
@@ -110,6 +111,7 @@ class Session:
             self.bus.publish(
                 EventKind.LOG, message=f"session {self.id} -> {self.status}", level="info"
             )
+            self.persist()  # remember where we left off
         return self.outcome
 
     async def execute(self, agent_names: List[str], review_rounds: int = 0) -> Dict[str, str]:
@@ -151,6 +153,7 @@ class Session:
             if broker is not None:
                 await broker.stop()
                 self._gate_sock = None
+            self.persist()  # capture post-execution session refs + diffs
 
     async def _run_rounds(self, workers, observers, review_rounds, feedback, results):
         by_name = {p.name: p for p in self.panelists}
@@ -320,6 +323,40 @@ class Session:
             raise RuntimeError("no worktrees to keep from")
         return await self.worktrees.keep(agent, into=into)
 
+    # -- persistence -------------------------------------------------------
+
+    def to_record(self):
+        from .store import PanelistRecord, SessionRecord
+
+        o = self.outcome
+        return SessionRecord(
+            id=self.id, question=self.question,
+            repo=str(self.repo) if self.repo else None,
+            status=self.status, created=self.created or "",
+            elected=o.elected if o else None,
+            plan=o.plan if o else "",
+            options=o.options if o else [],
+            panelists=[
+                PanelistRecord(
+                    name=p.name, kind=p.config.kind, session_ref=p.session_ref,
+                    plan=(p.record.text if p.record else ""),
+                    fit=(p.record.fit if p.record else 0.5),
+                )
+                for p in self.panelists
+            ],
+        )
+
+    def persist(self) -> None:
+        """Save a compact record so the session can be resumed after a restart."""
+        if self.repo is None:
+            return
+        from .store import SessionStore
+
+        try:
+            SessionStore(self.repo).save(self.to_record())
+        except Exception:
+            pass
+
     async def cleanup(self, keep_agent: Optional[str] = None) -> None:
         """Tear down worktrees. If ``keep_agent`` is set, merge it first, then clean."""
         if self.worktrees is None:
@@ -340,6 +377,8 @@ class SessionManager:
     def create(
         self, question: str, repo: Optional[Path] = None, use_worktrees: bool = True
     ) -> Session:
+        from .store import _now
+
         self._seq += 1
         sid = _short_id(self._seq)
         session = Session(
@@ -349,8 +388,65 @@ class SessionManager:
             bus=EventBus(),
             config=self.config,
             use_worktrees=use_worktrees,
+            created=_now(),
         )
         self.sessions[sid] = session
+        return session
+
+    def load_saved(self, repo: Path) -> List["Session"]:
+        """Reload previously-persisted sessions for a repo (resumable after a restart)."""
+        from .store import SessionStore
+
+        restored = []
+        for record in SessionStore(repo).load_all():
+            restored.append(self.restore(record))
+        return restored
+
+    def restore(self, record) -> "Session":
+        """Rebuild a Session from a saved record — panelists keep their native session_ref,
+        so resuming reattaches each agent to its own session."""
+        from .config import AgentConfig
+        from .consensus import ConsensusResult, PlanRecord
+        from .deliberation import Panelist, SessionOutcome
+
+        repo = Path(record.repo) if record.repo else None
+        session = Session(id=record.id, question=record.question, repo=repo,
+                          bus=EventBus(), config=self.config, use_worktrees=bool(repo),
+                          created=record.created)
+        session.status = record.status
+        if repo is not None:
+            session.worktrees = WorktreeManager(repo, record.id)
+
+        panelists = []
+        for pr in record.panelists:
+            acfg = AgentConfig(name=pr.name, kind=pr.kind)
+            workdir = repo or Path.cwd()
+            if session.worktrees is not None:
+                workdir = session.worktrees.path_for(pr.name)
+            p = Panelist(config=acfg, adapter=build_adapter(acfg), workdir=workdir,
+                         session_ref=pr.session_ref)
+            if pr.plan:
+                p.record = PlanRecord(agent=pr.name, text=pr.plan, turn=0,
+                                      session_ref=pr.session_ref, fit=pr.fit)
+            panelists.append(p)
+        session.panelists = panelists
+
+        if record.status in ("converged", "escalated"):
+            stub = ConsensusResult(
+                turn=0, clusters=[], agreement=1.0 if record.elected else 0.0,
+                converged=record.status == "converged", leading=None, elected=record.elected,
+                ranking=[], dissenters=[], responders=len(panelists), silent=[],
+            )
+            session.outcome = SessionOutcome(
+                status=record.status, result=stub, turns_used=0, plan=record.plan,
+                elected=record.elected, options=record.options,
+            )
+        self.sessions[record.id] = session
+        # keep new-session ids from colliding with restored ones
+        try:
+            self._seq = max(self._seq, int(record.id.lstrip("s")))
+        except ValueError:
+            pass
         return session
 
     def start(self, session: Session) -> asyncio.Task:

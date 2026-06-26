@@ -61,6 +61,7 @@ ln -s "$(pwd)/agentpanel" /usr/local/bin/agentpanel
 ./agentpanel bootstrap             # explicit cold start: install + log in + verify, then configure
 ./agentpanel add cursor codex      # quickly add specific agents (install + log in + verify); empty = any
 ./agentpanel doctor                # which agents are installed / installable
+./agentpanel sessions              # list saved sessions — restart `agentpanel` to resume where you left off
 ./agentpanel --mock                # launch the TUI with a built-in mock panel
 ./agentpanel ask --mock "Design the session persistence layer"          # headless
 ./agentpanel ask --mock --execute --keep claude --review 1 "..."        # full loop + coopetition

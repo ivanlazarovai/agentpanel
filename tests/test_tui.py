@@ -31,8 +31,9 @@ def _demo_config() -> Config:
 
 
 @pytest.mark.asyncio
-async def test_tui_runs_and_converges():
-    app = AgentPanelApp(config=_demo_config(), demo_question="Persist sessions")
+async def test_tui_runs_and_converges(tmp_path):
+    # repo=tmp_path (not a git repo) → no restore-on-startup, no worktrees: isolated.
+    app = AgentPanelApp(config=_demo_config(), repo=tmp_path, demo_question="Persist sessions")
     async with app.run_test() as pilot:
         # Wait for the demo session to finish (bounded).
         for _ in range(200):
