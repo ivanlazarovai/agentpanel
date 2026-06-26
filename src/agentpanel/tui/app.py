@@ -16,6 +16,7 @@ from typing import Optional
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Static, TabbedContent, TabPane
 
 from ..core import config as cfg
@@ -87,11 +88,41 @@ class Welcome(Vertical):
         yield Static(_banner(), classes="w-banner")
         yield Static("a council of superagents — mediated, not commanded", classes="w-tag")
         yield Static(PROSE, classes="w-prose", markup=True)
+        yield Static("", id="cwd", classes="w-cwd", markup=True)  # working folder, set by app
         yield Vertical(id="agents")  # connected agents, filled + animated by the app
         yield Static("[dim]· checking which agents are available …[/]",
                      id="welcome-status", classes="w-status", markup=True)
         yield Static("[bold cyan]▸[/]  Type a request [bold]below[/] and press "
                      "[bold]Enter[/] to convene the panel.", classes="w-cta", markup=True)
+
+
+class ChangeDirScreen(ModalScreen[Optional[Path]]):
+    """Prompt for a new working folder; dismiss with the resolved Path (or None)."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, current: Path) -> None:
+        super().__init__()
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dir-box"):
+            yield Static("[bold]Change working folder[/]\n[dim]Where the panel operates — "
+                         "sessions and per-agent worktrees. Absolute or ~ path.[/]", markup=True)
+            yield Input(value=str(self._current), placeholder="/path/to/repo", id="dir-input")
+
+    def on_mount(self) -> None:
+        self.query_one("#dir-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        path = Path(event.value.strip()).expanduser()
+        if not path.is_dir():
+            self.notify(f"not a folder: {path}", severity="error")
+            return
+        self.dismiss(path.resolve())
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class AgentPanelApp(App):
@@ -113,14 +144,19 @@ class AgentPanelApp(App):
     .w-tag { color: $text-muted; margin-bottom: 1; }
     .w-status { margin-top: 1; }
     .w-cta { margin-top: 1; }
-    #agents { width: auto; height: auto; margin-top: 1; }
-    .w-agents-head { width: auto; color: $text-muted; }
+    .w-cwd { width: auto; margin-top: 1; background: $boost; color: $accent; padding: 0 1; }
+    #agents { width: auto; height: auto; margin-top: 1; border: round $primary;
+              border-title-color: $accent; padding: 0 2; }
     .w-agent-row { width: auto; height: 1; }
+    #dir-box { width: 80; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
+    #dir-box Input { margin-top: 1; }
+    ChangeDirScreen { align: center middle; }
     """
     # priority=True so these fire even while the ask Input is focused (Ctrl-A/E/O would
     # otherwise be consumed by the input as cursor/edit keys).
     BINDINGS = [
         Binding("ctrl+n", "focus_ask", "New session"),
+        Binding("ctrl+d", "change_dir", "Change folder", priority=True),
         Binding("ctrl+a", "agent_setup", "Agent setup", priority=True),
         Binding("ctrl+e", "execute", "Execute elected", priority=True),
         Binding("ctrl+o", "open_session", "Open agent's session", priority=True),
@@ -133,6 +169,7 @@ class AgentPanelApp(App):
         self.manager = SessionManager(config or cfg.load())
         self.repo = repo or Path.cwd()
         self._demo_question = demo_question
+        self._home_loading = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -146,6 +183,7 @@ class AgentPanelApp(App):
         self.title = "AgentPanel"
         self.sub_title = f"{len(self.manager.config.panel() or self.manager.config.enabled_agents())} panelists"
         self.query_one("#sessions", TabbedContent).display = False  # welcome until first session
+        self._update_cwd()
         self.set_interval(1.0, self._tick_progress)  # live elapsed clocks on working agents
         restored = 0
         if self._is_git_repo():
@@ -157,65 +195,103 @@ class AgentPanelApp(App):
             self.run_worker(self._populate_home_agents(), exclusive=False)
 
     async def _populate_home_agents(self) -> None:
-        """List the connected agents on the home page, animate a spinner per agent while a
-        background process checks each one, and settle each row to its account/plan as it
-        verifies. Then surface what's available to add and steer first-time users into setup."""
+        """List the connected agents on the home page — every agent that's installed and
+        signed in, not just the drivable panel — animate a spinner per agent while a
+        background process checks each, and settle each row to its account/plan + role
+        ("in panel" vs "connected, not a panelist yet") as it verifies."""
         import asyncio
+        import os
+        import shutil
 
         from ..core import ftu
-        from ..core.adapters import KNOWN_AGENTS, catalog_entry
+        from ..core.adapters import KNOWN_AGENTS
 
         config = self.manager.config
-        roster = config.roster
+        roster_names = {a.name for a in config.roster}
         try:
             box = self.query_one("#agents", Vertical)
         except Exception:
             return
-        await box.mount(Static("[bold]Connected agents[/]", classes="w-agents-head"))
+        box.border_title = "Connected agents"
+
+        # Cheap, no-subprocess presence guess (binary on PATH / app bundle present) so we
+        # know which agents exist immediately and never claim "no agents" while probing.
+        def present(entry) -> bool:
+            probe = str(entry.get("probe") or "")
+            app = os.path.expanduser(str(entry.get("app") or ""))
+            return bool(probe and shutil.which(probe)) or bool(app and os.path.exists(app))
+
+        candidates = [e for e in KNOWN_AGENTS if e["name"] in roster_names or present(e)]
         rows: dict = {}
-        if roster:
-            for a in roster:
-                label = str((catalog_entry(a.name) or {}).get("label") or a.name)
-                row = AgentRow(label)
-                rows[a.name] = row
+        if candidates:
+            for e in candidates:
+                row = AgentRow(str(e.get("label") or e["name"]))
+                rows[str(e["name"])] = row
                 await box.mount(row)
         else:
-            await box.mount(Static("[yellow]none connected yet[/] — press [bold]^A[/] to add",
+            await box.mount(Static("[yellow]no agents found[/] — press [bold]^A[/] to install one",
                                    classes="w-agent-row"))
-        roster_names = set(rows)
+
+        # Animated loading line while the real checks run.
+        status = self.query_one("#welcome-status", Static)
+        self._home_loading = True
+        frames, state = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", {"i": 0}
+
+        def spin() -> None:
+            if not self._home_loading or not status.is_mounted:
+                return
+            state["i"] = (state["i"] + 1) % len(frames)
+            n = len(candidates)
+            status.update(f"[cyan]{frames[state['i']]}[/] [dim]checking "
+                          f"{n} agent{'s' if n != 1 else ''}…[/]")
+
+        spin_timer = self.set_interval(0.08, spin)
 
         async def probe(entry) -> "ftu.DetectedAgent":
-            # Each agent's row settles the moment ITS own check returns (not after all).
+            # Each row settles the moment ITS own check returns (not after all).
             detected = await ftu._probe(entry)
             acct = await ftu.account_status(detected) if detected.installed else None
             row = rows.get(str(entry["name"]))
             if row is not None:
-                if detected.installed and acct and acct.line:
-                    row.settle(f"[green]✓[/]  [bold]{row.label_text}[/]   [dim]{acct.line}[/]")
-                elif detected.installed:
-                    row.settle(f"[green]✓[/]  [bold]{row.label_text}[/]   [dim]connected[/]")
+                who = acct.line if (acct and acct.line) else ""
+                drivable, in_panel = bool(entry.get("adapter")), str(entry["name"]) in roster_names
+                if not detected.installed:
+                    row.settle(f"[red]✗[/]  [bold]{row.label_text}[/]   [dim]· not installed[/]")
                 else:
-                    row.settle(f"[red]✗[/]  [bold]{row.label_text}[/]   [dim]not installed — ^A[/]")
+                    tag = ("[green]· in panel[/]" if in_panel and drivable
+                           else "[cyan]· ready — ^A to add[/]" if drivable
+                           else "[dim]· connected (not a panelist yet)[/]")
+                    acct_part = f"   [dim]{who}[/]" if who else ""
+                    row.settle(f"[green]✓[/]  [bold]{row.label_text}[/]{acct_part}   {tag}")
             return detected
 
-        detected = await asyncio.gather(*(probe(e) for e in KNOWN_AGENTS))
-        extra = [d.label for d in detected if d.installed and d.name not in roster_names]
+        detected = await asyncio.gather(*(probe(e) for e in candidates)) if candidates else []
+        self._home_loading = False
+        spin_timer.stop()
 
-        ready = [p.name for p in (config.panel() or config.enabled_agents())]
-        hint = f"[green]●[/] {len(ready)} in panel" if ready else "[yellow]●[/] no panel yet"
-        if extra:
-            hint += f"   ·   available to add: {', '.join(extra)}"
-        hint += "\n[dim]press [bold]^A[/] to set up agents · switch accounts · add more[/]"
+        connected = [d for d in detected if d.installed]
+        in_panel = [p.name for p in (config.panel() or config.enabled_agents())]
+        summary = (f"[green]●[/] [bold]{len(in_panel)}[/] in panel · "
+                   f"[bold]{len(connected)}[/] connected" if connected
+                   else "[yellow]●[/] no agents connected")
+        summary += "\n[dim]press [bold]^A[/] to set up agents · switch accounts · add more[/]"
         try:
-            self.query_one("#welcome-status", Static).update(hint)
+            status.update(summary)
         except Exception:
             return  # welcome already replaced by a session
 
-        if not cfg.config_exists():  # genuine first run → open setup for them
-            self.notify("Welcome — let's set up your panel.", timeout=6)
-            self.set_timer(0.6, self.action_agent_setup)
-        elif len(ready) < 2:  # has config but too thin to deliberate
-            self.notify("Panel is thin — press ^A to add more agents.",
+        # Steer setup — without ever claiming "no agents" when some are connected.
+        if not in_panel:
+            if connected:
+                self.notify(f"{len(connected)} agent(s) connected — press ^A to add them "
+                            "to your panel.", timeout=6)
+            else:
+                self.notify("No agents found yet — press ^A to install one.",
+                            severity="warning", timeout=6)
+            if not cfg.config_exists():
+                self.set_timer(0.6, self.action_agent_setup)
+        elif len(in_panel) < 2:
+            self.notify("Add a second agent for real deliberation — press ^A.",
                         severity="warning", timeout=6)
 
     async def _restore_saved_sessions(self) -> int:
@@ -242,6 +318,27 @@ class AgentPanelApp(App):
 
     def action_focus_ask(self) -> None:
         self.query_one("#ask-input", Input).focus()
+
+    def _cwd_markup(self) -> str:
+        note = "" if self._is_git_repo() else "   [yellow](not a git repo — execution disabled)[/]"
+        return f"📁 [bold]{self.repo}[/]   [dim]^D to change[/]{note}"
+
+    def _update_cwd(self) -> None:
+        try:
+            self.query_one("#cwd", Static).update(self._cwd_markup())
+        except Exception:
+            pass  # welcome not present (a session is showing)
+
+    def action_change_dir(self) -> None:
+        """Change the working folder the panel operates in (Ctrl-D)."""
+        def _done(path: Optional[Path]) -> None:
+            if path is None:
+                return
+            self.repo = path
+            self._update_cwd()
+            self.notify(f"Working folder → {path}")
+
+        self.push_screen(ChangeDirScreen(self.repo), _done)
 
     def action_agent_setup(self) -> None:
         """Open agent setup (Ctrl-A): add agents, sign in/out, switch accounts."""
