@@ -233,9 +233,20 @@ class DeliberationEngine:
     async def _consensus(self, turn: int) -> ConsensusResult:
         plans = self.records()
         started = time.monotonic()
-        clusters = await self.judge.cluster(self.question, plans)
+        # A judge failure (API auth, rate limit, bad JSON, …) must never crash the session —
+        # fall back to the zero-dependency deterministic judge and carry on.
+        try:
+            clusters = await self.judge.cluster(self.question, plans)
+            backend = type(self.judge).__name__
+        except Exception as exc:
+            from .judge import DeterministicJudge
+
+            clusters = await DeterministicJudge().cluster(self.question, plans)
+            backend = "DeterministicJudge(fallback)"
+            self.bus.publish(EventKind.LOG, level="warning",
+                             message=f"judge failed ({exc}); used deterministic clustering")
         self.bus.publish(
-            EventKind.JUDGE, turn=turn, backend=type(self.judge).__name__,
+            EventKind.JUDGE, turn=turn, backend=backend,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
         result = evaluate(plans, clusters, self.settings.consensus_threshold, turn)

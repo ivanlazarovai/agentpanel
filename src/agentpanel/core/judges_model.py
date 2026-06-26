@@ -112,10 +112,19 @@ class NeutralModelJudge:
     """Cluster plans with a dedicated Anthropic model (independent of the panel)."""
 
     def __init__(self, model: Optional[str] = None) -> None:
+        import os
+
         # Import here so the dependency is optional; raises if anthropic isn't installed,
         # which build_judge catches to fall back to the deterministic judge.
         from anthropic import AsyncAnthropic  # noqa: F401
 
+        # The Anthropic SDK needs an API key/token — a Claude *subscription* login (OAuth)
+        # does NOT satisfy it. Without credentials the SDK raises at call time and would
+        # crash the session, so refuse construction here and let build_judge fall back.
+        if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+            raise RuntimeError(
+                "neutral-model judge needs ANTHROPIC_API_KEY (a Claude subscription login "
+                "doesn't provide one) — falling back to a no-API judge")
         self._client_cls = AsyncAnthropic
         self.model = model or DEFAULT_JUDGE_MODEL
 
@@ -124,16 +133,21 @@ class NeutralModelJudge:
         if len(responding) <= 1:
             return [Cluster(key="solo", label=p.agent, members=[p.agent], representative=p.agent)
                     for p in responding]
-        client = self._client_cls()
-        resp = await client.messages.create(
-            model=self.model,
-            max_tokens=2000,
-            output_config={"format": {"type": "json_schema", "schema": _CLUSTER_SCHEMA}},
-            messages=[{"role": "user", "content": _judge_prompt(question, plans)}],
-        )
-        text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
-        data = _extract_json(text) or {"clusters": []}
-        return _to_clusters(data, plans)
+        try:
+            client = self._client_cls()
+            resp = await client.messages.create(
+                model=self.model,
+                max_tokens=2000,
+                output_config={"format": {"type": "json_schema", "schema": _CLUSTER_SCHEMA}},
+                messages=[{"role": "user", "content": _judge_prompt(question, plans)}],
+            )
+            text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
+            data = _extract_json(text) or {"clusters": []}
+            return _to_clusters(data, plans)
+        except Exception:  # API/auth/transport failure → don't crash, cluster deterministically
+            from .judge import DeterministicJudge
+
+            return await DeterministicJudge().cluster(question, plans)
 
 
 class DesignatedAgentJudge:
