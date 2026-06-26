@@ -45,6 +45,7 @@ class DetectedAgent:
     binary: Optional[str] = None
     version: str = ""
     install_cmd: str = ""
+    auth_cmd: str = ""
     docs: str = ""
     health: Optional[HealthStatus] = None
 
@@ -67,6 +68,7 @@ async def detect() -> List[DetectedAgent]:
         drivable = bool(entry.get("adapter"))
         probe = str(entry.get("probe") or "")
         install_cmd = str(entry.get("install") or "")
+        auth_cmd = str(entry.get("auth") or "")
         docs = str(entry.get("docs") or "")
         if drivable:
             health = await build(AgentConfig(name=name, kind=kind)).health()
@@ -74,7 +76,7 @@ async def detect() -> List[DetectedAgent]:
                 DetectedAgent(
                     name=name, kind=kind, label=label, installed=health.installed,
                     drivable=True, binary=health.binary, version=health.version,
-                    install_cmd=install_cmd, docs=docs, health=health,
+                    install_cmd=install_cmd, auth_cmd=auth_cmd, docs=docs, health=health,
                 )
             )
         else:
@@ -82,10 +84,38 @@ async def detect() -> List[DetectedAgent]:
             out.append(
                 DetectedAgent(
                     name=name, kind=kind, label=label, installed=bool(path), drivable=False,
-                    binary=path, install_cmd=install_cmd, docs=docs,
+                    binary=path, install_cmd=install_cmd, auth_cmd=auth_cmd, docs=docs,
                 )
             )
     return out
+
+
+# Phrases in an agent's error output that mean "not logged in" (vs a real failure).
+_AUTH_HINTS = ("authenticat", "log in", "login", "logged in", "api key", "api-key",
+               "unauthorized", "not signed in", "sign in", "credential")
+
+
+def needs_login(text: str) -> bool:
+    low = (text or "").lower()
+    return any(h in low for h in _AUTH_HINTS)
+
+
+async def login(agent: DetectedAgent) -> InstallResult:
+    """Launch the agent's native login, attached to the terminal so its browser/device-code
+    flow works. AgentPanel can't complete the login for you, but it runs it so you never
+    leave the panel. In a TUI, call this inside ``app.suspend()``.
+    """
+    cmd = agent.auth_cmd
+    if not cmd:
+        return InstallResult(ok=False, command="", output="no login command for this agent")
+    try:
+        # Inherit stdio (no PIPE) so interactive prompts / browser handoff work.
+        proc = await asyncio.create_subprocess_shell(cmd)
+        rc = await proc.wait()
+        return InstallResult(ok=rc == 0, command=cmd,
+                             output="logged in" if rc == 0 else f"login exited {rc}")
+    except Exception as exc:  # pragma: no cover - shell failure
+        return InstallResult(ok=False, command=cmd, output=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +208,7 @@ class VerifyResult:
     ok: bool
     detail: str = ""
     transcript: str = ""
+    needs_login: bool = False  # the failure looks like an auth/login problem
 
 
 async def verify(agent_config: AgentConfig, repo: Path, timeout: float = 90.0) -> VerifyResult:
@@ -208,8 +239,9 @@ async def verify(agent_config: AgentConfig, repo: Path, timeout: float = 90.0) -
 
     text = "".join(collected).strip()
     if failed or not text:
-        return VerifyResult(agent=agent_config.name, ok=False,
-                            detail=detail or "no response", transcript=text)
+        msg = detail or text or "no response"
+        return VerifyResult(agent=agent_config.name, ok=False, detail=msg,
+                            transcript=text, needs_login=needs_login(msg))
     low = text.lower()
     acknowledged = any(k in low for k in ("ready", "approach", "worktree", "fit"))
     return VerifyResult(
@@ -271,3 +303,75 @@ def assemble_config(
         settings=settings,
         repo=str(repo) if repo else None,
     )
+
+
+def recommend_judge(verified_agents: List[str]) -> JudgeConfig:
+    """Pick a sensible neutral judge from what's available, no API key required.
+
+    A verified roster agent acts as neutral chair (works with a subscription login);
+    deterministic when nothing is verified yet. (The user can switch to a dedicated
+    Anthropic-API judge later if they have a key.)
+    """
+    if verified_agents:
+        return JudgeConfig(backend="designated_agent", agent=verified_agents[0])
+    return JudgeConfig(backend="deterministic")
+
+
+# ---------------------------------------------------------------------------
+# Cold-start orchestrator — bootstart from zero config to a working panel
+# ---------------------------------------------------------------------------
+
+
+async def auto_bootstrap(
+    repo: Path,
+    *,
+    do_install: bool = True,
+    do_login: bool = True,
+    emit=lambda _msg: None,
+) -> Config:
+    """From *no configuration*, bring AgentPanel up to a working multi-agent state.
+
+    For each drivable agent: install it if missing, run its native login if the
+    verification handshake says it's not authed, verify it understands the repo, and add
+    it to the roster. Then pick a judge, grant the base directory, write the shared brief,
+    and return a ready-to-save :class:`Config`. Install/login are interactive (they attach
+    to the terminal), so this runs from a real terminal or a suspended TUI.
+    """
+    repo = Path(repo).resolve()
+    write_brief(repo, ["AGENTS.md"])
+    emit("wrote AGENTS.md (shared dev-cycle brief)")
+
+    roster: List[AgentConfig] = []
+    verified: List[str] = []
+
+    for agent in [a for a in await detect() if a.drivable]:
+        if not agent.installed and do_install and agent.installable:
+            emit(f"installing {agent.label}…  ($ {agent.install_cmd})")
+            res = await install(agent)
+            emit(f"  {'installed' if res.ok else 'install failed: ' + res.output[-120:]}")
+            agent = next((a for a in await detect() if a.name == agent.name), agent)
+        if not agent.installed:
+            emit(f"skipping {agent.label} (not installed)")
+            continue
+
+        vr = await verify(AgentConfig(name=agent.name, kind=agent.kind), repo)
+        if not vr.ok and vr.needs_login and agent.auth_cmd and do_login:
+            emit(f"{agent.label} needs login — launching `{agent.auth_cmd}`…")
+            await login(agent)
+            vr = await verify(AgentConfig(name=agent.name, kind=agent.kind), repo)
+
+        roster.append(AgentConfig(name=agent.name, kind=agent.kind,
+                                  enabled=vr.ok, verified=vr.ok))
+        if vr.ok:
+            verified.append(agent.name)
+        emit(f"{agent.label}: {'✓ ready' if vr.ok else '· ' + vr.detail}")
+
+    config = Config(
+        roster=roster,
+        judge=recommend_judge(verified),
+        settings=Settings(),
+        repo=str(repo),
+        permissions={"granted_dirs": [str(repo)], "rules": [], "default": "ask"},
+    )
+    emit(f"panel: {', '.join(verified) or '(none verified yet)'}  ·  judge: {config.judge.backend}")
+    return config

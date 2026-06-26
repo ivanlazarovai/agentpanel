@@ -33,6 +33,11 @@ def main(argv: List[str] | None = None) -> int:
 
     sub.add_parser("doctor", help="probe installed/installable agents")
     sub.add_parser("setup", help="run the first-time-user / reconfiguration wizard")
+    boot = sub.add_parser("bootstrap",
+                          help="cold start: install + log in + verify agents, then configure")
+    boot.add_argument("--dir", default=".", help="base directory to operate in (default: cwd)")
+    boot.add_argument("--no-install", action="store_true", help="don't install missing agents")
+    boot.add_argument("--no-login", action="store_true", help="don't launch agent logins")
     parser.add_argument("--mock", action="store_true",
                         help="launch the TUI with a built-in mock panel (no real agents)")
     ask = sub.add_parser("ask", help="run one headless panel session")
@@ -57,6 +62,8 @@ def main(argv: List[str] | None = None) -> int:
         return asyncio.run(_doctor())
     if args.command == "setup":
         return _setup()
+    if args.command == "bootstrap":
+        return asyncio.run(_bootstrap(args.dir, not args.no_install, not args.no_login))
     if args.command == "ask":
         return asyncio.run(_ask(args.question, args.repo, args.mock, args.no_worktrees,
                                 args.execute, args.keep, args.review))
@@ -136,6 +143,26 @@ async def _doctor() -> int:
 # ---------------------------------------------------------------------------
 # Stubs for commands implemented in later build steps
 # ---------------------------------------------------------------------------
+
+
+async def _bootstrap(directory: str, do_install: bool, do_login: bool) -> int:
+    from .core import ftu
+
+    repo = Path(directory).resolve()
+    print(f"AgentPanel cold start in {repo}\n")
+    config = await ftu.auto_bootstrap(repo, do_install=do_install, do_login=do_login,
+                                      emit=lambda m: print(f"  {m}"))
+    cfg.save(config)
+    panel = [a.name for a in config.panel()]
+    print(f"\nSaved {cfg.GLOBAL_CONFIG}.")
+    if len(panel) >= 2:
+        print(f"Panel ready: {', '.join(panel)} — launch with `agentpanel`.")
+    elif len(panel) == 1:
+        print(f"One agent ready ({panel[0]}). Add a second for real deliberation "
+              "(re-run bootstrap after installing/logging in another).")
+    else:
+        print("No agents verified yet. Re-run `agentpanel bootstrap` after resolving the notes above.")
+    return 0
 
 
 def _setup() -> int:

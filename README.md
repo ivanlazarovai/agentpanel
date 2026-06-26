@@ -54,6 +54,7 @@ join a panel — exactly what the FTU verification handshake checks for.)
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/agentpanel bootstrap              # cold start: install + log in + verify agents, then configure
 .venv/bin/agentpanel doctor                 # which agents are installed / installable
 .venv/bin/agentpanel --mock                 # launch the TUI with a built-in mock panel
 .venv/bin/agentpanel ask --mock "Design the session persistence layer"   # headless

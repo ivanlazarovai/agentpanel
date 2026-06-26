@@ -60,6 +60,25 @@ async def test_verify_failed_agent(tmp_path: Path):
     assert not result.ok
 
 
+def test_needs_login_detects_auth_failures():
+    assert ftu.needs_login("Error: Authentication required. Please run login.")
+    assert ftu.needs_login("set OPENAI_API_KEY or run `codex login`")
+    assert not ftu.needs_login("SyntaxError: unexpected token")
+    assert not ftu.needs_login("")
+
+
+def test_recommend_judge_prefers_chair_then_deterministic():
+    assert ftu.recommend_judge(["claude", "cursor"]).backend == "designated_agent"
+    assert ftu.recommend_judge(["claude", "cursor"]).agent == "claude"
+    assert ftu.recommend_judge([]).backend == "deterministic"
+
+
+@pytest.mark.asyncio
+async def test_detect_carries_auth_command():
+    by_name = {a.name: a for a in await ftu.detect()}
+    assert by_name["cursor"].auth_cmd == "cursor-agent login"
+
+
 def test_assemble_config_roundtrips_choices():
     choices = [
         AgentChoice(name="claude", kind="claude_code", model="claude-opus-4-8", verified=True),

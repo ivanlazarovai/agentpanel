@@ -58,6 +58,8 @@ class AgentRow(Static):
             with Horizontal(classes="agent-line"):
                 yield self.enable
                 yield self.model
+                if a.auth_cmd:
+                    yield Button("Log in", id=f"login-{a.name}")
             ver = f"  ✓ installed {a.version}".rstrip()
             self.status.update(ver)
             yield self.status
@@ -124,6 +126,8 @@ class FtuApp(App):
                            value=True, id="write-brief")
             yield Static("", id="verify-results")
             with Horizontal(id="buttons"):
+                yield Button("Cold start (install + log in + verify all)", id="coldstart",
+                             variant="primary")
                 yield Button("Verify enabled agents", id="verify")
                 yield Button("Save & Finish", id="save", variant="success")
         yield Footer()
@@ -150,10 +154,36 @@ class FtuApp(App):
         bid = event.button.id or ""
         if bid.startswith("install-"):
             await self._install(bid[len("install-"):])
+        elif bid.startswith("login-"):
+            await self._login(bid[len("login-"):])
+        elif bid == "coldstart":
+            await self._coldstart()
         elif bid == "verify":
             await self._verify()
         elif bid == "save":
             await self._save()
+
+    async def _login(self, name: str) -> None:
+        row = self.rows.get(name)
+        if not row or not row.agent.auth_cmd:
+            return
+        # Suspend the TUI so the agent's interactive/browser login owns the terminal.
+        with self.suspend():
+            print(f"\nLaunching `{row.agent.auth_cmd}` — complete the login, then return.\n")
+            res = await ftu.login(row.agent)
+        row.status.update("  ✓ logged in — verify to confirm" if res.ok
+                          else f"  login: {res.output[-80:]}")
+
+    async def _coldstart(self) -> None:
+        """One click: install + log in + verify every drivable agent, then finish."""
+        repo = Path(self.query_one("#repo", Input).value or ".")
+        with self.suspend():
+            print("\n== AgentPanel cold start ==\n")
+            config = await ftu.auto_bootstrap(repo, emit=lambda m: print(f"  {m}"))
+            input("\nDone. Press Enter to return to AgentPanel…")
+        cfg.save(config, self.config_path)
+        self.result = config
+        self.exit(config)
 
     async def _install(self, name: str) -> None:
         row = self.rows.get(name)

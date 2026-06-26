@@ -41,6 +41,7 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "probe": "cursor-agent",
         "adapter": True,
         "install": "curl https://cursor.com/install -fsS | bash",
+        "auth": "cursor-agent login",  # interactive (browser); AgentPanel launches it for you
         "docs": "https://docs.cursor.com/en/cli/overview",
     },
     {
@@ -50,6 +51,7 @@ KNOWN_AGENTS: List[Dict[str, object]] = [
         "probe": "codex",
         "adapter": False,
         "install": "npm install -g @openai/codex",
+        "auth": "codex login",  # ChatGPT/device-code login
         "docs": "https://developers.openai.com/codex/cli",
     },
     {
